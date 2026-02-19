@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
 import { QrCodeScanner } from "@/components/qr-code-scanner";
 import { Button } from "@/components/ui/button";
@@ -27,19 +28,55 @@ function LoginCard() {
   const router = useRouter();
   const [loginCode, setLoginCode] = React.useState("");
   const [scouterName, setScouterName] = React.useState("");
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const isFormComplete = Boolean(loginCode.trim() && scouterName.trim());
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    const maxAge = 60 * 60 * 24 * 7;
-    document.cookie = `loginCode=${encodeURIComponent(
-      loginCode
-    )}; path=/; max-age=${maxAge}`;
-    document.cookie = `scouterName=${encodeURIComponent(
-      scouterName
-    )}; path=/; max-age=${maxAge}`;
+    const trimmedLoginCode = loginCode.trim();
+    const trimmedScouterName = scouterName.trim();
+    if (!trimmedLoginCode || !trimmedScouterName) {
+      return;
+    }
 
-    router.push("/");
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch("/api/login/validate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ loginCode: trimmedLoginCode }),
+      });
+
+      if (!response.ok) {
+        toast.error("Invalid login code");
+        return;
+      }
+
+      const result = (await response.json()) as {
+        valid?: boolean;
+        payload?: unknown;
+        backgroundImage?: string | null;
+      };
+
+      if (!result.valid) {
+        toast.error("Invalid login code");
+        return;
+      }
+
+      localStorage.setItem("loggedIn", "true");
+      localStorage.setItem("loginCode", trimmedLoginCode);
+      localStorage.setItem("scouterName", trimmedScouterName);
+      localStorage.setItem("payload", JSON.stringify(result.payload ?? null));
+      localStorage.setItem("backgroundImage", result.backgroundImage ?? "");
+
+      router.push("/scout");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -75,7 +112,11 @@ function LoginCard() {
               onChange={(event) => setScouterName(event.target.value)}
             />
           </div>
-          <Button className="w-full" type="submit">
+          <Button
+            className="w-full"
+            type="submit"
+            disabled={!isFormComplete || isSubmitting}
+          >
             Sign in
           </Button>
         </form>
