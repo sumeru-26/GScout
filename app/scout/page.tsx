@@ -6,11 +6,14 @@ import { Expand } from "lucide-react"
 
 import { useHeaderActions } from "@/components/app-shell"
 import { Button } from "@/components/ui/button"
+import { Field, FieldLabel } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
 type ButtonAsset = {
   id: string
   type: "button"
+  buttonKind: "button" | "swap" | "undo" | "redo" | "submit" | "reset"
   x: number
   y: number
   width: number
@@ -28,7 +31,34 @@ type IconButtonAsset = {
   iconName: string
 }
 
-type ScoutAsset = ButtonAsset | IconButtonAsset
+type CoverAsset = {
+  id: string
+  type: "cover"
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+type InputAsset = {
+  id: string
+  type: "input"
+  x: number
+  y: number
+  width: number
+  height: number
+  placeholder?: string
+  label?: string
+}
+
+type MirrorLine = {
+  startX: number
+  startY: number
+  endX: number
+  endY: number
+}
+
+type ScoutAsset = ButtonAsset | IconButtonAsset | CoverAsset | InputAsset
 
 function toPercentFromScale(value: number) {
   return ((value + 100) / 200) * 100
@@ -56,6 +86,53 @@ function normalizeButtonKind(value: unknown): value is "button" {
 
 function normalizeSwapButtonKind(value: unknown): value is "swap" {
   return typeof value === "string" && value.toLowerCase() === "swap"
+}
+
+function normalizeActionButtonKind(value: unknown): value is "undo" | "redo" | "submit" | "reset" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return normalized === "undo" || normalized === "redo" || normalized === "submit" || normalized === "reset"
+}
+
+function toActionButtonLabel(kind: "undo" | "redo" | "submit" | "reset") {
+  return kind.charAt(0).toUpperCase() + kind.slice(1)
+}
+
+function normalizeMirrorKind(value: unknown): value is "mirror" {
+  return typeof value === "string" && value.toLowerCase() === "mirror"
+}
+
+function normalizeCoverKind(value: unknown): value is "cover" {
+  return typeof value === "string" && value.toLowerCase() === "cover"
+}
+
+function normalizeInputKind(value: unknown): value is "input" {
+  return typeof value === "string" && value.toLowerCase() === "input"
+}
+
+function getPayloadItems(payload: unknown): unknown[] {
+  if (!payload) return []
+
+  const directItems = Array.isArray(payload) ? payload : []
+
+  const nestedItems =
+    payload && typeof payload === "object"
+      ? (() => {
+          const source = payload as {
+            items?: unknown
+            editorState?: {
+              items?: unknown
+            }
+          }
+
+          if (Array.isArray(source.items)) return source.items
+          if (Array.isArray(source.editorState?.items)) return source.editorState.items
+          return []
+        })()
+      : []
+
+  return [...directItems, ...nestedItems]
 }
 
 function normalizeIconButtonKind(value: unknown): value is "icon-button" {
@@ -141,28 +218,65 @@ function getLucideIcon(iconName: string) {
   return LucideIcons.Circle
 }
 
+function reflectPointAcrossLine(
+  x: number,
+  y: number,
+  mirrorLine: MirrorLine
+): { x: number; y: number } {
+  const ax = mirrorLine.startX
+  const ay = mirrorLine.startY
+  const bx = mirrorLine.endX
+  const by = mirrorLine.endY
+
+  const abx = bx - ax
+  const aby = by - ay
+  const abLengthSquared = abx * abx + aby * aby
+
+  if (abLengthSquared === 0) {
+    return { x, y }
+  }
+
+  const apx = x - ax
+  const apy = y - ay
+  const projectionScale = (apx * abx + apy * aby) / abLengthSquared
+
+  const qx = ax + projectionScale * abx
+  const qy = ay + projectionScale * aby
+
+  return {
+    x: 2 * qx - x,
+    y: 2 * qy - y,
+  }
+}
+
+function parseMirrorLine(payload: unknown): MirrorLine | null {
+  const items = getPayloadItems(payload)
+
+  const mirror = items
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .find((item) => normalizeMirrorKind(item.type) || normalizeMirrorKind(item.kind))
+
+  if (!mirror) return null
+
+  if (
+    !isFiniteNumber(mirror.startX) ||
+    !isFiniteNumber(mirror.startY) ||
+    !isFiniteNumber(mirror.endX) ||
+    !isFiniteNumber(mirror.endY)
+  ) {
+    return null
+  }
+
+  return {
+    startX: clampPositionScale(mirror.startX),
+    startY: clampPositionScale(mirror.startY),
+    endX: clampPositionScale(mirror.endX),
+    endY: clampPositionScale(mirror.endY),
+  }
+}
+
 function parseScoutAssets(payload: unknown): ScoutAsset[] {
-  if (!payload) return []
-
-  const directItems = Array.isArray(payload) ? payload : []
-
-  const nestedItems =
-    payload && typeof payload === "object"
-      ? (() => {
-          const source = payload as {
-            items?: unknown
-            editorState?: {
-              items?: unknown
-            }
-          }
-
-          if (Array.isArray(source.items)) return source.items
-          if (Array.isArray(source.editorState?.items)) return source.editorState.items
-          return []
-        })()
-      : []
-
-  const items = [...directItems, ...nestedItems]
+  const items = getPayloadItems(payload)
 
   return items
     .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
@@ -172,6 +286,12 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeButtonKind(item.kind) ||
         normalizeSwapButtonKind(item.type) ||
         normalizeSwapButtonKind(item.kind) ||
+        normalizeActionButtonKind(item.type) ||
+        normalizeActionButtonKind(item.kind) ||
+        normalizeCoverKind(item.type) ||
+        normalizeCoverKind(item.kind) ||
+        normalizeInputKind(item.type) ||
+        normalizeInputKind(item.kind) ||
         normalizeIconButtonKind(item.type) ||
         normalizeIconButtonKind(item.kind)
     )
@@ -189,7 +309,44 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           : `button-${index}`
 
       const isIconButton = normalizeIconButtonKind(item.type) || normalizeIconButtonKind(item.kind)
+      const isCover = normalizeCoverKind(item.type) || normalizeCoverKind(item.kind)
+      const isInput = normalizeInputKind(item.type) || normalizeInputKind(item.kind)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
+      const actionButtonKind = normalizeActionButtonKind(item.type)
+        ? item.type
+        : normalizeActionButtonKind(item.kind)
+          ? item.kind
+          : null
+
+      if (isCover) {
+        return {
+          id,
+          type: "cover",
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+        } satisfies CoverAsset
+      }
+
+      if (isInput) {
+        return {
+          id,
+          type: "input",
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          placeholder:
+            typeof item.placeholder === "string" && item.placeholder.trim().length > 0
+              ? item.placeholder
+              : undefined,
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label
+              : undefined,
+        } satisfies InputAsset
+      }
 
       if (isIconButton) {
         return {
@@ -209,6 +366,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
       return {
         id,
         type: "button",
+        buttonKind: isSwapButton ? "swap" : actionButtonKind ?? "button",
         x: clampPositionScale(item.x as number),
         y: clampPositionScale(item.y as number),
         width: clampSizeScale(item.width as number),
@@ -220,16 +378,20 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
               ? item.label
               : isSwapButton
                 ? "Swap Sides"
-              : undefined,
-                  } satisfies ButtonAsset
+                : actionButtonKind
+                  ? toActionButtonLabel(actionButtonKind)
+                : undefined,
+      } satisfies ButtonAsset
     })
 }
 
 export default function ScoutPage() {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isSwapped, setIsSwapped] = useState(false)
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null)
   const [scoutAssets, setScoutAssets] = useState<ScoutAsset[]>([])
+  const [mirrorLine, setMirrorLine] = useState<MirrorLine | null>(null)
   const { setHeaderActions } = useHeaderActions()
 
   useEffect(() => {
@@ -239,16 +401,51 @@ export default function ScoutPage() {
     const storedPayload = localStorage.getItem("payload")
     if (!storedPayload) {
       setScoutAssets([])
+      setMirrorLine(null)
       return
     }
 
     try {
       const parsedPayload = JSON.parse(storedPayload) as unknown
       setScoutAssets(parseScoutAssets(parsedPayload))
+      setMirrorLine(parseMirrorLine(parsedPayload))
     } catch {
       setScoutAssets([])
+      setMirrorLine(null)
     }
   }, [])
+
+  const displayedAssets = useMemo(() => {
+    if (!isSwapped || !mirrorLine) return scoutAssets
+
+    return scoutAssets.map((asset) => {
+      const reflected = reflectPointAcrossLine(asset.x, asset.y, mirrorLine)
+
+      return {
+        ...asset,
+        x: clampPositionScale(reflected.x),
+        y: clampPositionScale(reflected.y),
+      }
+    })
+  }, [isSwapped, mirrorLine, scoutAssets])
+
+  const coverAssets = useMemo(
+    () => displayedAssets.filter((asset): asset is CoverAsset => asset.type === "cover"),
+    [displayedAssets]
+  )
+
+  const buttonAssets = useMemo(
+    () =>
+      displayedAssets.filter(
+        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset => asset.type !== "cover"
+      ),
+    [displayedAssets]
+  )
+
+  const handleSwapSides = useCallback(() => {
+    if (!mirrorLine) return
+    setIsSwapped((previous) => !previous)
+  }, [mirrorLine])
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -322,13 +519,34 @@ export default function ScoutPage() {
           isFullscreen ? "min-h-screen" : "min-h-[calc(100vh-3.5rem)]"
         )}
       >
-        {scoutAssets.map((asset, index) => {
+        {coverAssets.map((asset, index) => {
           const commonStyle = {
             left: `${toPercentFromScale(asset.x)}%`,
             top: `${100 - toPercentFromScale(asset.y)}%`,
             width: `${toSizePercentFromScale(asset.width)}%`,
             height: `${toSizePercentFromScale(asset.height)}%`,
             transform: "translate(-50%, -50%)",
+          }
+
+          return (
+            <div
+              key={asset.id ?? `cover-${index}`}
+              className="absolute bg-background"
+              style={commonStyle}
+            />
+          )
+        })}
+        {buttonAssets.map((asset, index) => {
+          const baseStyle = {
+            left: `${toPercentFromScale(asset.x)}%`,
+            top: `${100 - toPercentFromScale(asset.y)}%`,
+            width: `${toSizePercentFromScale(asset.width)}%`,
+            transform: "translate(-50%, -50%)",
+          }
+
+          const sizedStyle = {
+            ...baseStyle,
+            height: `${toSizePercentFromScale(asset.height)}%`,
           }
 
           if (asset.type === "icon-button") {
@@ -340,10 +558,26 @@ export default function ScoutPage() {
                 type="button"
                 variant="outline"
                 className="absolute p-0"
-                style={commonStyle}
+                style={sizedStyle}
               >
                 <Icon />
               </Button>
+            )
+          }
+
+          if (asset.type === "input") {
+            return (
+              <Field
+                key={asset.id ?? `input-${index}`}
+                className="absolute"
+                style={baseStyle}
+              >
+                {asset.label ? <FieldLabel>{asset.label}</FieldLabel> : null}
+                <Input
+                  placeholder={asset.placeholder}
+                  aria-label={asset.label ?? "Input"}
+                />
+              </Field>
             )
           }
 
@@ -353,7 +587,8 @@ export default function ScoutPage() {
               type="button"
               variant="outline"
               className="absolute"
-              style={commonStyle}
+              style={sizedStyle}
+              onClick={asset.buttonKind === "swap" ? handleSwapSides : undefined}
             >
               {asset.text ?? "Button"}
             </Button>
