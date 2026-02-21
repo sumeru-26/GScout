@@ -16,6 +16,70 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+function normalizeIconButtonKind(value: unknown): value is "icon-button" {
+  if (typeof value !== "string") return false;
+
+  const normalized = value.toLowerCase();
+  return (
+    normalized === "icon" ||
+    normalized === "icon-button" ||
+    normalized === "iconbutton" ||
+    normalized === "icon_button"
+  );
+}
+
+function toLucideExportName(iconName: string) {
+  return iconName
+    .trim()
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join("");
+}
+
+function extractPayloadItems(payload: unknown): unknown[] {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (typeof payload !== "object") return [];
+
+  const source = payload as {
+    items?: unknown;
+    editorState?: {
+      items?: unknown;
+    };
+  };
+
+  if (Array.isArray(source.items)) return source.items;
+  if (Array.isArray(source.editorState?.items)) return source.editorState.items;
+  return [];
+}
+
+function extractIconNamesFromPayload(payload: unknown): string[] {
+  const items = extractPayloadItems(payload);
+
+  const iconNames = items
+    .filter(
+      (item): item is Record<string, unknown> => Boolean(item && typeof item === "object")
+    )
+    .filter((item) => normalizeIconButtonKind(item.kind) || normalizeIconButtonKind(item.type))
+    .map((item) => item.iconName)
+    .filter((iconName): iconName is string => typeof iconName === "string" && iconName.trim().length > 0)
+    .map((iconName) => iconName.trim().toLowerCase());
+
+  return [...new Set(iconNames)];
+}
+
+async function preloadPayloadIcons(payload: unknown) {
+  const iconNames = extractIconNamesFromPayload(payload);
+  if (iconNames.length === 0) return;
+
+  const lucideIcons = (await import("lucide-react")) as Record<string, unknown>;
+  iconNames.forEach((name) => {
+    const exportName = toLucideExportName(name);
+    void lucideIcons[exportName];
+  });
+}
+
 export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/40 px-4 py-12">
@@ -72,6 +136,8 @@ function LoginCard() {
       localStorage.setItem("scouterName", trimmedScouterName);
       localStorage.setItem("payload", JSON.stringify(result.payload ?? null));
       localStorage.setItem("backgroundImage", result.backgroundImage ?? "");
+
+      await preloadPayloadIcons(result.payload);
 
       router.push("/scout");
     } finally {
