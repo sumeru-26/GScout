@@ -309,7 +309,7 @@ export default function ScoutPage() {
         backgroundImage
           ? {
               backgroundImage: `url("${backgroundImage}")`,
-              backgroundSize: "cover",
+              backgroundSize: "contain",
               backgroundPosition: "center",
               backgroundRepeat: "no-repeat",
             }
