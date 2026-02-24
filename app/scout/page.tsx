@@ -3,9 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as LucideIcons from "lucide-react"
 import { Expand } from "lucide-react"
+import QRCode from "qrcode"
 
 import { useHeaderActions } from "@/components/app-shell"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
@@ -14,6 +23,7 @@ type ButtonAsset = {
   id: string
   type: "button"
   buttonKind: "button" | "swap" | "undo" | "redo" | "submit" | "reset"
+  tag?: string
   x: number
   y: number
   width: number
@@ -24,6 +34,7 @@ type ButtonAsset = {
 type IconButtonAsset = {
   id: string
   type: "icon-button"
+  tag?: string
   x: number
   y: number
   width: number
@@ -43,6 +54,7 @@ type CoverAsset = {
 type InputAsset = {
   id: string
   type: "input"
+  tag?: string
   x: number
   y: number
   width: number
@@ -109,6 +121,24 @@ function normalizeCoverKind(value: unknown): value is "cover" {
 
 function normalizeInputKind(value: unknown): value is "input" {
   return typeof value === "string" && value.toLowerCase() === "input"
+}
+
+function parseAssetTag(item: Record<string, unknown>) {
+  const rawTag =
+    typeof item.tag === "string"
+      ? item.tag
+      : typeof item.inputTag === "string"
+        ? item.inputTag
+        : typeof item.input_tag === "string"
+          ? item.input_tag
+          : typeof item.name === "string"
+            ? item.name
+            : undefined
+
+  if (!rawTag) return undefined
+
+  const normalized = rawTag.trim()
+  return normalized.length > 0 ? normalized : undefined
 }
 
 function getPayloadItems(payload: unknown): unknown[] {
@@ -333,6 +363,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "input",
+          tag: parseAssetTag(item),
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -352,6 +383,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "icon-button",
+          tag: parseAssetTag(item),
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -367,6 +399,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         id,
         type: "button",
         buttonKind: isSwapButton ? "swap" : actionButtonKind ?? "button",
+        tag: parseAssetTag(item),
         x: clampPositionScale(item.x as number),
         y: clampPositionScale(item.y as number),
         width: clampSizeScale(item.width as number),
@@ -392,6 +425,12 @@ export default function ScoutPage() {
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null)
   const [scoutAssets, setScoutAssets] = useState<ScoutAsset[]>([])
   const [mirrorLine, setMirrorLine] = useState<MirrorLine | null>(null)
+  const [tagStack, setTagStack] = useState<string[]>([])
+  const [redoTagStack, setRedoTagStack] = useState<string[]>([])
+  const [inputValuesByKey, setInputValuesByKey] = useState<Record<string, string>>({})
+  const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false)
+  const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
+  const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
   const { setHeaderActions } = useHeaderActions()
 
   useEffect(() => {
@@ -446,6 +485,91 @@ export default function ScoutPage() {
     if (!mirrorLine) return
     setIsSwapped((previous) => !previous)
   }, [mirrorLine])
+
+  const pushTagToStack = useCallback((tag?: string) => {
+    if (!tag || tag.trim().length === 0) return
+
+    setTagStack((previous) => [...previous, tag])
+    setRedoTagStack([])
+  }, [])
+
+  const handleUndo = useCallback(() => {
+    if (tagStack.length === 0) return
+
+    const popped = tagStack[tagStack.length - 1]
+    setTagStack((previous) => previous.slice(0, -1))
+    setRedoTagStack((previous) => [...previous, popped])
+  }, [tagStack])
+
+  const handleRedo = useCallback(() => {
+    if (redoTagStack.length === 0) return
+
+    const popped = redoTagStack[redoTagStack.length - 1]
+    setRedoTagStack((previous) => previous.slice(0, -1))
+    setTagStack((previous) => [...previous, popped])
+  }, [redoTagStack])
+
+  const handleSubmit = useCallback(async () => {
+    const output: Record<string, number | string> = {}
+
+    const uniqueButtonAndIconTags = [
+      ...new Set(
+        scoutAssets
+          .filter(
+            (asset): asset is ButtonAsset | IconButtonAsset =>
+              asset.type === "button" || asset.type === "icon-button"
+          )
+          .map((asset) => asset.tag)
+          .filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
+      ),
+    ]
+
+    const uniqueInputTags = [
+      ...new Set(
+        scoutAssets
+          .filter((asset): asset is InputAsset => asset.type === "input")
+          .map((asset) => (asset.tag && asset.tag.trim().length > 0 ? asset.tag : asset.id))
+      ),
+    ]
+
+    uniqueButtonAndIconTags.forEach((tag) => {
+      output[tag] = 0
+    })
+
+    uniqueInputTags.forEach((tag) => {
+      output[tag] = ""
+    })
+
+    uniqueButtonAndIconTags.forEach((tag) => {
+      output[tag] = tagStack.filter((stackTag) => stackTag === tag).length
+    })
+
+    uniqueInputTags.forEach((tag) => {
+      output[tag] = inputValuesByKey[tag] ?? ""
+    })
+
+    const payloadJson = JSON.stringify(output)
+    setSubmitPayloadJson(payloadJson)
+
+    try {
+      const qrDataUrl = await QRCode.toDataURL(payloadJson, {
+        width: 320,
+        margin: 1,
+      })
+      setSubmitQrCodeUrl(qrDataUrl)
+    } catch {
+      setSubmitQrCodeUrl(null)
+    }
+
+    setIsSubmitDialogOpen(true)
+
+    console.log("[ScoutPage] submit payload:", output)
+  }, [inputValuesByKey, scoutAssets, tagStack])
+
+  useEffect(() => {
+    console.log("[ScoutPage] tagStack:", tagStack)
+    console.log("[ScoutPage] redoTagStack:", redoTagStack)
+  }, [tagStack, redoTagStack])
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -559,6 +683,7 @@ export default function ScoutPage() {
                 variant="outline"
                 className="absolute p-0"
                 style={sizedStyle}
+                onClick={() => pushTagToStack(asset.tag)}
               >
                 <Icon />
               </Button>
@@ -566,6 +691,11 @@ export default function ScoutPage() {
           }
 
           if (asset.type === "input") {
+            const inputStateKey =
+              typeof asset.tag === "string" && asset.tag.trim().length > 0
+                ? asset.tag
+                : asset.id
+
             return (
               <Field
                 key={asset.id ?? `input-${index}`}
@@ -574,6 +704,14 @@ export default function ScoutPage() {
               >
                 {asset.label ? <FieldLabel>{asset.label}</FieldLabel> : null}
                 <Input
+                  value={inputValuesByKey[inputStateKey] ?? ""}
+                  onChange={(event) => {
+                    const nextValue = event.target.value
+                    setInputValuesByKey((previous) => ({
+                      ...previous,
+                      [inputStateKey]: nextValue,
+                    }))
+                  }}
                   placeholder={asset.placeholder}
                   aria-label={asset.label ?? "Input"}
                 />
@@ -585,16 +723,75 @@ export default function ScoutPage() {
             <Button
               key={asset.id ?? `button-${index}`}
               type="button"
-              variant="outline"
+              variant={
+                asset.buttonKind === "submit"
+                  ? "default"
+                  : asset.buttonKind === "reset"
+                    ? "destructive"
+                    : "outline"
+              }
               className="absolute"
               style={sizedStyle}
-              onClick={asset.buttonKind === "swap" ? handleSwapSides : undefined}
+              onClick={() => {
+                if (asset.buttonKind === "undo") {
+                  handleUndo()
+                  return
+                }
+
+                if (asset.buttonKind === "redo") {
+                  handleRedo()
+                  return
+                }
+
+                if (asset.buttonKind !== "submit" && asset.buttonKind !== "reset") {
+                  pushTagToStack(asset.tag)
+                }
+
+                if (asset.buttonKind === "submit") {
+                  handleSubmit()
+                }
+
+                if (asset.buttonKind === "reset") {
+                  setTagStack([])
+                  setRedoTagStack([])
+                  setInputValuesByKey({})
+                }
+
+                if (asset.buttonKind === "swap") {
+                  handleSwapSides()
+                }
+              }}
             >
-              {asset.text ?? "Button"}
+              {asset.buttonKind === "undo" ? (
+                <LucideIcons.Undo2 />
+              ) : asset.buttonKind === "redo" ? (
+                <LucideIcons.Redo2 />
+              ) : (
+                asset.text ?? "Button"
+              )}
             </Button>
           )
         })}
       </div>
+      <Dialog open={isSubmitDialogOpen} onOpenChange={setIsSubmitDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Submit QR Code</DialogTitle>
+            <DialogDescription>
+              Scan to read the submitted scouting JSON.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-center">
+            {submitQrCodeUrl ? (
+              <img src={submitQrCodeUrl} alt="Submitted scouting JSON QR code" className="size-64" />
+            ) : (
+              <div className="text-muted-foreground text-sm">Unable to generate QR code.</div>
+            )}
+          </div>
+          <p className="text-muted-foreground break-all text-xs">{submitPayloadJson}</p>
+          <DialogFooter showCloseButton />
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
