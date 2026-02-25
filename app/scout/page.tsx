@@ -699,6 +699,12 @@ export default function ScoutPage() {
           isFullscreen ? "min-h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
         )}
       >
+        {isFallbackFullscreen ? (
+          <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md bg-background/90 px-3 py-1 text-xs text-muted-foreground shadow-sm">
+            App fullscreen mode (native fullscreen is not available on this browser)
+          </div>
+        ) : null}
+
         {coverAssets.map((asset, index) => {
           const commonStyle = {
             left: `${toPercentFromScale(asset.x)}%`,
