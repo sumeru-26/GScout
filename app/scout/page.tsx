@@ -72,6 +72,28 @@ type MirrorLine = {
 
 type ScoutAsset = ButtonAsset | IconButtonAsset | CoverAsset | InputAsset
 
+type FullscreenDocument = Document & {
+  webkitFullscreenElement?: Element | null
+  webkitExitFullscreen?: () => Promise<void> | void
+}
+
+type FullscreenElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void
+}
+
+function getActiveFullscreenElement(doc: Document) {
+  const webkitDocument = doc as FullscreenDocument
+  return doc.fullscreenElement ?? webkitDocument.webkitFullscreenElement ?? null
+}
+
+function canUseNativeFullscreen(element: HTMLElement) {
+  const webkitElement = element as FullscreenElement
+  return (
+    typeof element.requestFullscreen === "function" ||
+    typeof webkitElement.webkitRequestFullscreen === "function"
+  )
+}
+
 function toPercentFromScale(value: number) {
   return ((value + 100) / 200) * 100
 }
@@ -420,7 +442,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
 
 export default function ScoutPage() {
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState(false)
+  const [isFallbackFullscreen, setIsFallbackFullscreen] = useState(false)
+  const isFullscreen = isNativeFullscreen || isFallbackFullscreen
   const [isSwapped, setIsSwapped] = useState(false)
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null)
   const [scoutAssets, setScoutAssets] = useState<ScoutAsset[]>([])
@@ -573,12 +597,19 @@ export default function ScoutPage() {
 
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement))
+      const hasNativeFullscreen = Boolean(getActiveFullscreenElement(document))
+      setIsNativeFullscreen(hasNativeFullscreen)
+
+      if (hasNativeFullscreen) {
+        setIsFallbackFullscreen(false)
+      }
     }
 
     document.addEventListener("fullscreenchange", handleFullscreenChange)
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange)
     return () => {
       document.removeEventListener("fullscreenchange", handleFullscreenChange)
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange)
     }
   }, [])
 
@@ -586,14 +617,39 @@ export default function ScoutPage() {
     const element = containerRef.current
     if (!element) return
 
-    if (!document.fullscreenElement) {
-      await element.requestFullscreen()
+    const webkitDocument = document as FullscreenDocument
+    const activeFullscreenElement = getActiveFullscreenElement(document)
+
+    if (activeFullscreenElement) {
+      if (typeof document.exitFullscreen === "function") {
+        await document.exitFullscreen()
+        return
+      }
+
+      if (typeof webkitDocument.webkitExitFullscreen === "function") {
+        await webkitDocument.webkitExitFullscreen()
+        return
+      }
+
+      setIsFallbackFullscreen(false)
       return
     }
 
-    if (document.fullscreenElement === element) {
-      await document.exitFullscreen()
+    if (canUseNativeFullscreen(element)) {
+      const webkitElement = element as FullscreenElement
+
+      if (typeof element.requestFullscreen === "function") {
+        await element.requestFullscreen()
+        return
+      }
+
+      if (typeof webkitElement.webkitRequestFullscreen === "function") {
+        await webkitElement.webkitRequestFullscreen()
+        return
+      }
     }
+
+    setIsFallbackFullscreen((previous) => !previous)
   }, [])
 
   const fullscreenAction = useMemo(
@@ -624,7 +680,7 @@ export default function ScoutPage() {
       className={cn(
         "relative rounded-lg border border-dashed",
         backgroundImage ? "bg-transparent" : "bg-muted/20",
-        isFullscreen ? "min-h-screen" : "min-h-[calc(100vh-3.5rem)]"
+        isFullscreen ? "min-h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
       )}
       style={
         backgroundImage
@@ -640,7 +696,7 @@ export default function ScoutPage() {
       <div
         className={cn(
           "relative",
-          isFullscreen ? "min-h-screen" : "min-h-[calc(100vh-3.5rem)]"
+          isFullscreen ? "min-h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
         )}
       >
         {coverAssets.map((asset, index) => {
