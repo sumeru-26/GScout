@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 
 type ButtonAsset = {
@@ -63,6 +64,24 @@ type InputAsset = {
   label?: string
 }
 
+type AutoToggleAsset = {
+  id: string
+  type: "auto-toggle"
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+type LogAsset = {
+  id: string
+  type: "log"
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 type MirrorLine = {
   startX: number
   startY: number
@@ -70,7 +89,17 @@ type MirrorLine = {
   endY: number
 }
 
-type ScoutAsset = ButtonAsset | IconButtonAsset | CoverAsset | InputAsset
+type ScoutAsset =
+  | ButtonAsset
+  | IconButtonAsset
+  | CoverAsset
+  | InputAsset
+  | AutoToggleAsset
+  | LogAsset
+
+type ControlMode = "auto" | "teleop"
+
+const AUTO_TIMER_DURATION_MS = 25_000
 
 type FullscreenDocument = Document & {
   webkitFullscreenElement?: Element | null
@@ -143,6 +172,26 @@ function normalizeCoverKind(value: unknown): value is "cover" {
 
 function normalizeInputKind(value: unknown): value is "input" {
   return typeof value === "string" && value.toLowerCase() === "input"
+}
+
+function normalizeAutoToggleKind(value: unknown): value is "auto-toggle" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return normalized === "auto-toggle" || normalized === "autotoggle" || normalized === "auto_toggle"
+}
+
+function normalizeLogKind(value: unknown): value is "log" {
+  return typeof value === "string" && value.toLowerCase() === "log"
+}
+
+function stripModePrefix(tag: string) {
+  return tag.replace(/^(auto|teleop)\./, "")
+}
+
+function toModePrefixedTag(tag: string, mode: ControlMode) {
+  const normalizedTag = stripModePrefix(tag.trim())
+  return `${mode}.${normalizedTag}`
 }
 
 function parseAssetTag(item: Record<string, unknown>) {
@@ -344,6 +393,12 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeCoverKind(item.kind) ||
         normalizeInputKind(item.type) ||
         normalizeInputKind(item.kind) ||
+        normalizeAutoToggleKind(item.type) ||
+        normalizeAutoToggleKind(item.kind) ||
+        normalizeAutoToggleKind(item.key) ||
+        normalizeLogKind(item.type) ||
+        normalizeLogKind(item.kind) ||
+        normalizeLogKind(item.key) ||
         normalizeIconButtonKind(item.type) ||
         normalizeIconButtonKind(item.kind)
     )
@@ -363,6 +418,11 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
       const isIconButton = normalizeIconButtonKind(item.type) || normalizeIconButtonKind(item.kind)
       const isCover = normalizeCoverKind(item.type) || normalizeCoverKind(item.kind)
       const isInput = normalizeInputKind(item.type) || normalizeInputKind(item.kind)
+      const isAutoToggle =
+        normalizeAutoToggleKind(item.type) ||
+        normalizeAutoToggleKind(item.kind) ||
+        normalizeAutoToggleKind(item.key)
+      const isLog = normalizeLogKind(item.type) || normalizeLogKind(item.kind) || normalizeLogKind(item.key)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
       const actionButtonKind = normalizeActionButtonKind(item.type)
         ? item.type
@@ -399,6 +459,28 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
               ? item.label
               : undefined,
         } satisfies InputAsset
+      }
+
+      if (isAutoToggle) {
+        return {
+          id,
+          type: "auto-toggle",
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+        } satisfies AutoToggleAsset
+      }
+
+      if (isLog) {
+        return {
+          id,
+          type: "log",
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+        } satisfies LogAsset
       }
 
       if (isIconButton) {
@@ -455,9 +537,16 @@ export default function ScoutPage() {
   const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
+  const [scouterName, setScouterName] = useState<string>("")
+  const [controlMode, setControlMode] = useState<ControlMode>("auto")
+  const [autoTimerStartedAtMs, setAutoTimerStartedAtMs] = useState<number | null>(null)
+  const [autoTimerRemainingMs, setAutoTimerRemainingMs] = useState<number>(AUTO_TIMER_DURATION_MS)
   const { setHeaderActions } = useHeaderActions()
 
   useEffect(() => {
+    const storedScouterName = localStorage.getItem("scouterName")
+    setScouterName(storedScouterName?.trim() ?? "")
+
     const storedBackgroundImage = localStorage.getItem("backgroundImage")
     setBackgroundImage(storedBackgroundImage || null)
 
@@ -500,10 +589,81 @@ export default function ScoutPage() {
   const buttonAssets = useMemo(
     () =>
       displayedAssets.filter(
-        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset => asset.type !== "cover"
+        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset | AutoToggleAsset | LogAsset =>
+          asset.type !== "cover"
       ),
     [displayedAssets]
   )
+
+  const recentTagLog = useMemo(() => {
+    return [...tagStack].slice(-5).reverse()
+  }, [tagStack])
+
+  const setTeleopMode = useCallback(() => {
+    setControlMode("teleop")
+    setAutoTimerStartedAtMs(null)
+    setAutoTimerRemainingMs(AUTO_TIMER_DURATION_MS)
+  }, [])
+
+  const setAutoMode = useCallback((startTimer: boolean) => {
+    setControlMode("auto")
+
+    if (startTimer) {
+      setAutoTimerStartedAtMs(Date.now())
+      setAutoTimerRemainingMs(AUTO_TIMER_DURATION_MS)
+      return
+    }
+
+    setAutoTimerStartedAtMs(null)
+    setAutoTimerRemainingMs(AUTO_TIMER_DURATION_MS)
+  }, [])
+
+  const isAutoTimerRunning = controlMode === "auto" && autoTimerStartedAtMs !== null
+  const autoTimerLabel = isAutoTimerRunning ? (autoTimerRemainingMs / 1000).toFixed(2) : "Auto"
+
+  const handleAutoToggleGroupChange = useCallback(
+    (nextValue: string) => {
+      if (nextValue === "auto") {
+        setAutoMode(true)
+        return
+      }
+
+      if (nextValue === "teleop") {
+        setTeleopMode()
+        return
+      }
+
+      // Clicking the active item emits an empty value. Keep one mode selected at all times.
+      if (controlMode === "auto") {
+        if (autoTimerStartedAtMs !== null) {
+          setTeleopMode()
+          return
+        }
+
+        setAutoMode(true)
+        return
+      }
+
+      setAutoMode(false)
+    },
+    [autoTimerStartedAtMs, controlMode, setAutoMode, setTeleopMode]
+  )
+
+  useEffect(() => {
+    if (controlMode !== "auto" || autoTimerStartedAtMs === null) return
+
+    const timerId = window.setInterval(() => {
+      const elapsedMs = Date.now() - autoTimerStartedAtMs
+      const remainingMs = Math.max(0, AUTO_TIMER_DURATION_MS - elapsedMs)
+      setAutoTimerRemainingMs(remainingMs)
+
+      if (remainingMs <= 0) {
+        setTeleopMode()
+      }
+    }, 10)
+
+    return () => window.clearInterval(timerId)
+  }, [autoTimerStartedAtMs, controlMode, setTeleopMode])
 
   const handleSwapSides = useCallback(() => {
     if (!mirrorLine) return
@@ -513,9 +673,11 @@ export default function ScoutPage() {
   const pushTagToStack = useCallback((tag?: string) => {
     if (!tag || tag.trim().length === 0) return
 
-    setTagStack((previous) => [...previous, tag])
+    const prefixedTag = toModePrefixedTag(tag, controlMode)
+
+    setTagStack((previous) => [...previous, prefixedTag])
     setRedoTagStack([])
-  }, [])
+  }, [controlMode])
 
   const handleUndo = useCallback(() => {
     if (tagStack.length === 0) return
@@ -556,7 +718,16 @@ export default function ScoutPage() {
       ),
     ]
 
-    uniqueButtonAndIconTags.forEach((tag) => {
+    const uniqueModePrefixedTags = [
+      ...new Set(
+        uniqueButtonAndIconTags.flatMap((tag) => {
+          const normalizedTag = stripModePrefix(tag)
+          return [`auto.${normalizedTag}`, `teleop.${normalizedTag}`]
+        })
+      ),
+    ]
+
+    uniqueModePrefixedTags.forEach((tag) => {
       output[tag] = 0
     })
 
@@ -564,13 +735,15 @@ export default function ScoutPage() {
       output[tag] = ""
     })
 
-    uniqueButtonAndIconTags.forEach((tag) => {
+    uniqueModePrefixedTags.forEach((tag) => {
       output[tag] = tagStack.filter((stackTag) => stackTag === tag).length
     })
 
     uniqueInputTags.forEach((tag) => {
       output[tag] = inputValuesByKey[tag] ?? ""
     })
+
+    output.scouter = scouterName
 
     const payloadJson = JSON.stringify(output)
     setSubmitPayloadJson(payloadJson)
@@ -588,7 +761,7 @@ export default function ScoutPage() {
     setIsSubmitDialogOpen(true)
 
     console.log("[ScoutPage] submit payload:", output)
-  }, [inputValuesByKey, scoutAssets, tagStack])
+  }, [inputValuesByKey, scoutAssets, scouterName, tagStack])
 
   useEffect(() => {
     console.log("[ScoutPage] tagStack:", tagStack)
@@ -778,6 +951,51 @@ export default function ScoutPage() {
                   aria-label={asset.label ?? "Input"}
                 />
               </Field>
+            )
+          }
+
+          if (asset.type === "auto-toggle") {
+            return (
+              <ToggleGroup
+                key={asset.id ?? `auto-toggle-${index}`}
+                type="single"
+                value={controlMode}
+                onValueChange={handleAutoToggleGroupChange}
+                className="absolute rounded-md border bg-background/90 p-1"
+                style={sizedStyle}
+              >
+                <ToggleGroupItem value="auto" className="h-full flex-1">
+                  {autoTimerLabel}
+                </ToggleGroupItem>
+                <ToggleGroupItem value="teleop" className="h-full flex-1">
+                  Teleop
+                </ToggleGroupItem>
+              </ToggleGroup>
+            )
+          }
+
+          if (asset.type === "log") {
+            return (
+              <div
+                key={asset.id ?? `log-${index}`}
+                className="absolute overflow-hidden rounded-md border bg-background/90 p-2"
+                style={sizedStyle}
+              >
+                <div
+                  className="h-full space-y-1 overflow-hidden text-xs leading-tight"
+                  style={{ fontFamily: '"Courier New", Courier, monospace' }}
+                >
+                  {recentTagLog.length === 0 ? (
+                    <p className="text-muted-foreground">No tags yet.</p>
+                  ) : (
+                    recentTagLog.map((entry, entryIndex) => (
+                      <p key={`${entry}-${entryIndex}`} className="truncate">
+                        {entry}
+                      </p>
+                    ))
+                  )}
+                </div>
+              </div>
             )
           }
 
