@@ -27,6 +27,7 @@ type ButtonAsset = {
   type: "button"
   buttonKind: "button" | "swap" | "undo" | "redo" | "submit" | "reset"
   tag?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -38,11 +39,14 @@ type IconButtonAsset = {
   id: string
   type: "icon-button"
   tag?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
   height: number
   iconName: string
+  outlineColor?: string
+  fillColor?: string
 }
 
 type CoverAsset = {
@@ -85,6 +89,8 @@ type ToggleSwitchAsset = {
   height: number
   label?: string
   value: boolean
+  textAlign?: "left" | "center" | "right"
+  textSize?: number
 }
 
 type LogAsset = {
@@ -127,6 +133,8 @@ type ScoutAsset =
 type ControlMode = "auto" | "teleop"
 
 const AUTO_TIMER_DURATION_MS = 25_000
+const TOGGLE_SIZE = { width: 52, height: 28 } as const
+const LOG_SIZE = { width: 280, height: 120 } as const
 
 type FullscreenDocument = Document & {
   webkitFullscreenElement?: Element | null
@@ -652,6 +660,20 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
       }
 
       if (isToggleSwitch) {
+        const toggleTextAlign =
+          typeof item.textAlign === "string"
+            ? item.textAlign.toLowerCase()
+            : typeof item.toggleTextAlign === "string"
+              ? item.toggleTextAlign.toLowerCase()
+              : undefined
+
+        const toggleTextSize =
+          typeof item.textSize === "number" && Number.isFinite(item.textSize)
+            ? item.textSize
+            : typeof item.toggleTextSize === "number" && Number.isFinite(item.toggleTextSize)
+              ? item.toggleTextSize
+              : undefined
+
         return {
           id,
           type: "toggle-switch",
@@ -667,6 +689,11 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
                 ? item.text
                 : undefined,
           value: toBoolean(item.value) ?? false,
+          textAlign:
+            toggleTextAlign === "left" || toggleTextAlign === "right" || toggleTextAlign === "center"
+              ? toggleTextAlign
+              : "center",
+          textSize: toggleTextSize,
         } satisfies ToggleSwitchAsset
       }
 
@@ -686,6 +713,10 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "icon-button",
           tag: parseAssetTag(item),
+          stageParentTag:
+            typeof item.stageParentTag === "string" && item.stageParentTag.trim().length > 0
+              ? item.stageParentTag
+              : undefined,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -694,6 +725,14 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
             typeof item.iconName === "string" && item.iconName.trim().length > 0
               ? item.iconName.trim().toLowerCase()
               : "circle",
+          outlineColor:
+            typeof item.outlineColor === "string" && item.outlineColor.trim().length > 0
+              ? item.outlineColor
+              : undefined,
+          fillColor:
+            typeof item.fillColor === "string" && item.fillColor.trim().length > 0
+              ? item.fillColor
+              : undefined,
         } satisfies IconButtonAsset
       }
 
@@ -702,6 +741,10 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         type: "button",
         buttonKind: isSwapButton ? "swap" : actionButtonKind ?? "button",
         tag: parseAssetTag(item),
+        stageParentTag:
+          typeof item.stageParentTag === "string" && item.stageParentTag.trim().length > 0
+            ? item.stageParentTag
+            : undefined,
         x: clampPositionScale(item.x as number),
         y: clampPositionScale(item.y as number),
         width: clampSizeScale(item.width as number),
@@ -742,6 +785,7 @@ export default function ScoutPage() {
   const [controlMode, setControlMode] = useState<ControlMode>("auto")
   const [autoTimerStartedAtMs, setAutoTimerStartedAtMs] = useState<number | null>(null)
   const [autoTimerRemainingMs, setAutoTimerRemainingMs] = useState<number>(AUTO_TIMER_DURATION_MS)
+  const isPreviewMode = true
   const { setHeaderActions } = useHeaderActions()
 
   useEffect(() => {
@@ -925,10 +969,6 @@ export default function ScoutPage() {
 
     setToggleValuesByKey(initialToggleValues)
   }, [scoutAssets])
-
-  const recentTagLog = useMemo(() => {
-    return [...tagStack].slice(-5).reverse()
-  }, [tagStack])
 
   const setTeleopMode = useCallback(() => {
     setControlMode("teleop")
@@ -1198,29 +1238,31 @@ export default function ScoutPage() {
     <div
       ref={containerRef}
       className={cn(
-        "relative rounded-lg border border-dashed",
-        backgroundImage ? "bg-transparent" : "bg-muted/20",
-        isFullscreen ? "min-h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
+        "relative overflow-hidden border border-white/10 bg-slate-950",
+        isFullscreen
+          ? "h-[100dvh] w-full rounded-none border-0"
+          : "min-h-[calc(100vh-3.5rem)] rounded-xl"
       )}
       style={
         backgroundImage
           ? {
+              backgroundColor: "#030919",
               backgroundImage: `url("${backgroundImage}")`,
               backgroundSize: "contain",
               backgroundPosition: "center",
               backgroundRepeat: "no-repeat",
             }
-          : undefined
+          : { backgroundColor: "#030919" }
       }
     >
       <div
         className={cn(
           "relative",
-          isFullscreen ? "min-h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
+          isFullscreen ? "h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
         )}
       >
         {isFallbackFullscreen ? (
-          <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md bg-background/90 px-3 py-1 text-xs text-muted-foreground shadow-sm">
+          <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-white/15 bg-slate-900/90 px-3 py-1 text-xs text-white/80 shadow-sm">
             App fullscreen mode (native fullscreen is not available on this browser)
           </div>
         ) : null}
@@ -1231,7 +1273,7 @@ export default function ScoutPage() {
           return (
             <div
               key={asset.id ?? `cover-${index}`}
-              className="absolute bg-background"
+              className="absolute rounded-md border border-white/10 bg-slate-900 transition-all duration-150 ease-out"
               style={commonStyle}
             />
           )
@@ -1242,17 +1284,29 @@ export default function ScoutPage() {
 
           if (asset.type === "icon-button") {
             const Icon = getLucideIcon(asset.iconName)
+            const hasStageBadge = Boolean(asset.stageParentTag)
 
             return (
               <Button
                 key={asset.id ?? `icon-button-${index}`}
                 type="button"
                 variant="outline"
-                className="absolute p-0"
+                className="absolute rounded-lg border border-white/20 bg-slate-900 p-0 text-white hover:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
                 style={sizedStyle}
                 onClick={() => pushTagToStack(asset.tag)}
               >
-                <Icon />
+                <Icon
+                  className="h-5 w-5"
+                  style={{
+                    stroke: asset.outlineColor ?? "currentColor",
+                    fill: asset.fillColor ?? "none",
+                  }}
+                />
+                {hasStageBadge ? (
+                  <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
+                    <LucideIcons.ChevronDown className="h-3 w-3" />
+                  </span>
+                ) : null}
               </Button>
             )
           }
@@ -1266,13 +1320,13 @@ export default function ScoutPage() {
             return (
               <Field
                 key={asset.id ?? `input-${index}`}
-                className="absolute"
-                style={baseStyle}
+                className="absolute flex h-full flex-col gap-2 transition-all duration-150 ease-out"
+                style={sizedStyle}
               >
-                {asset.label ? <FieldLabel>{asset.label}</FieldLabel> : null}
+                {asset.label ? <FieldLabel className="text-xs text-white/80">{asset.label}</FieldLabel> : null}
                 <Input
                   value={inputValuesByKey[inputStateKey] ?? ""}
-                  onChange={(event) => {
+                  onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                     const nextValue = event.target.value
                     setInputValuesByKey((previous) => ({
                       ...previous,
@@ -1281,6 +1335,7 @@ export default function ScoutPage() {
                   }}
                   placeholder={asset.placeholder}
                   aria-label={asset.label ?? "Input"}
+                  className="h-full border-white/15 bg-slate-900/90 text-white placeholder:text-white/50"
                 />
               </Field>
             )
@@ -1293,13 +1348,19 @@ export default function ScoutPage() {
                 type="single"
                 value={controlMode}
                 onValueChange={handleAutoToggleGroupChange}
-                className="absolute rounded-md border bg-background/90 p-1"
+                className="absolute grid h-full w-full grid-cols-2 gap-1 rounded-md border border-white/20 bg-slate-900/90 p-1 transition-all duration-150 ease-out"
                 style={sizedStyle}
               >
-                <ToggleGroupItem value="auto" className="h-full flex-1">
+                <ToggleGroupItem
+                  value="auto"
+                  className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+                >
                   {autoTimerLabel}
                 </ToggleGroupItem>
-                <ToggleGroupItem value="teleop" className="h-full flex-1">
+                <ToggleGroupItem
+                  value="teleop"
+                  className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+                >
                   Teleop
                 </ToggleGroupItem>
               </ToggleGroup>
@@ -1313,79 +1374,153 @@ export default function ScoutPage() {
                 : asset.id
             const isChecked = toggleValuesByKey[toggleKey] ?? asset.value
             const toggleId = `toggle-${asset.id ?? index}`
+            const textAlign = asset.textAlign ?? "center"
+            const textClass =
+              textAlign === "left"
+                ? "text-left"
+                : textAlign === "right"
+                  ? "text-right"
+                  : "text-center"
+            const textSize = asset.textSize ?? 10
+            const fieldBoundsWidth = measuredFieldBounds?.width ?? containerSize.width
+            const fieldBoundsHeight = measuredFieldBounds?.height ?? containerSize.height
+            const togglePixelWidth = fieldBoundsWidth * (asset.width / 100)
+            const togglePixelHeight = fieldBoundsHeight * (asset.height / 100)
+            const switchScale = Math.max(
+              0.35,
+              Math.min(
+                3.5,
+                Math.min(togglePixelWidth / TOGGLE_SIZE.width, togglePixelHeight / TOGGLE_SIZE.height)
+              )
+            )
+            const switchPixelWidth = 32 * switchScale
+            const switchPixelHeight = 18 * switchScale
+            const resolvedTextSize = Math.max(6, textSize * switchScale)
 
             return (
               <div
                 key={asset.id ?? `toggle-switch-${index}`}
-                className="absolute flex items-center justify-center cursor-default"
+                className="absolute flex items-center justify-center"
                 style={sizedStyle}
               >
-                <div className="flex items-center space-x-2">
-                  <Switch
-                    id={toggleId}
-                    className="cursor-pointer"
-                    checked={isChecked}
-                    onCheckedChange={(checked) => {
-                      setToggleValuesByKey((previous) => ({
-                        ...previous,
-                        [toggleKey]: checked,
-                      }))
+                <div className="flex h-full w-full items-center gap-2 overflow-visible">
+                  <div
+                    className="flex flex-none items-center justify-start"
+                    style={{
+                      width: switchPixelWidth,
+                      height: switchPixelHeight,
+                      transform: `scale(${switchScale})`,
+                      transformOrigin: "left center",
                     }}
-                  />
-                  <Label htmlFor={toggleId} className="cursor-pointer text-xs">
-                    {asset.label ?? "Toggle"}
-                  </Label>
+                  >
+                    <Switch
+                      id={toggleId}
+                      checked={isChecked}
+                      disabled={!isPreviewMode}
+                      onCheckedChange={(checked: boolean) => {
+                        if (!isPreviewMode) return
+
+                        setToggleValuesByKey((previous) => ({
+                          ...previous,
+                          [toggleKey]: checked,
+                        }))
+                      }}
+                    />
+                  </div>
+                  {asset.label ? (
+                    <Label
+                      htmlFor={toggleId}
+                      className={`shrink-0 whitespace-nowrap leading-none text-white/80 ${textClass}`}
+                      style={{ fontSize: resolvedTextSize }}
+                    >
+                      {asset.label}
+                    </Label>
+                  ) : null}
                 </div>
               </div>
             )
           }
 
           if (asset.type === "log") {
+            const fieldBoundsWidth = measuredFieldBounds?.width ?? containerSize.width
+            const fieldBoundsHeight = measuredFieldBounds?.height ?? containerSize.height
+            const logPixelWidth = fieldBoundsWidth * (asset.width / 100)
+            const logPixelHeight = fieldBoundsHeight * (asset.height / 100)
+            const logScale = Math.max(
+              0.45,
+              Math.min(3.5, Math.min(logPixelWidth / LOG_SIZE.width, logPixelHeight / LOG_SIZE.height))
+            )
+            const resolvedLogFontSize = Math.max(8, 11 * logScale)
+            const logLineHeightMultiplier = 1.35
+            const estimatedAvailableHeight = Math.max(0, logPixelHeight - 36)
+            const visibleLineCount = Math.max(
+              1,
+              Math.floor(estimatedAvailableHeight / (resolvedLogFontSize * logLineHeightMultiplier))
+            )
+            const visibleLogEntries = [...tagStack].slice(-visibleLineCount).reverse()
+
             return (
               <div
                 key={asset.id ?? `log-${index}`}
-                className="absolute overflow-hidden rounded-md border bg-background/90 p-2"
+                className="absolute overflow-hidden rounded-md border border-white/15 bg-slate-900/90 p-2 transition-all duration-150 ease-out"
                 style={sizedStyle}
               >
                 <div
-                  className="h-full space-y-1 overflow-hidden text-xs leading-tight"
-                  style={{ fontFamily: '"Courier New", Courier, monospace' }}
+                  className="h-full overflow-auto rounded border border-white/10 bg-slate-950/90 p-2 text-white/80"
+                  style={{
+                    fontSize: `${resolvedLogFontSize}px`,
+                    lineHeight: logLineHeightMultiplier,
+                  }}
                 >
-                  {recentTagLog.length === 0 ? (
-                    <p className="text-muted-foreground">No tags yet.</p>
-                  ) : (
-                    recentTagLog.map((entry, entryIndex) => (
-                      <p key={`${entry}-${entryIndex}`} className="truncate">
-                        {entry}
-                      </p>
-                    ))
-                  )}
+                  <pre className="whitespace-pre-wrap break-words font-sans">
+                    {visibleLogEntries.length > 0
+                      ? visibleLogEntries.join("\n")
+                      : "Submit in preview to display input values."}
+                  </pre>
                 </div>
               </div>
             )
           }
 
+          const hasStageBadge = Boolean(asset.stageParentTag)
+          const isSwapButton = asset.buttonKind === "swap"
+          const isSubmitButton = asset.buttonKind === "submit"
+          const isResetButton = asset.buttonKind === "reset"
+          const swapBorderClass = isSwapButton
+            ? isSwapped
+              ? "!border-2 !border-blue-400"
+              : "!border-2 !border-red-400"
+            : "border-white/20"
+          const buttonToneClass = isSubmitButton
+            ? "!bg-white !text-black hover:!bg-white/90"
+            : isResetButton
+              ? "!bg-[#9e4042] !text-white hover:!bg-[#9e4042]/90"
+              : "!bg-slate-900 !text-white hover:!bg-slate-900"
+
           return (
             <Button
               key={asset.id ?? `button-${index}`}
               type="button"
-              variant={
-                asset.buttonKind === "submit"
-                  ? "default"
-                  : asset.buttonKind === "reset"
-                    ? "destructive"
-                    : "outline"
-              }
-              className="absolute"
+              variant="outline"
+              className={cn(
+                "group absolute rounded-lg",
+                swapBorderClass,
+                buttonToneClass,
+                "transition-all duration-150 ease-out active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
+              )}
               style={sizedStyle}
               onClick={() => {
                 if (asset.buttonKind === "undo") {
-                  handleUndo()
+                  if (!isPreviewMode) {
+                    handleUndo()
+                  }
                   return
                 }
 
                 if (asset.buttonKind === "redo") {
-                  handleRedo()
+                  if (!isPreviewMode) {
+                    handleRedo()
+                  }
                   return
                 }
 
@@ -1422,12 +1557,23 @@ export default function ScoutPage() {
               }}
             >
               {asset.buttonKind === "undo" ? (
-                <LucideIcons.Undo2 />
+                <span className="inline-flex items-center gap-1.5">
+                  <LucideIcons.Undo2 className="h-4 w-4" />
+                  <span>Undo</span>
+                </span>
               ) : asset.buttonKind === "redo" ? (
-                <LucideIcons.Redo2 />
+                <span className="inline-flex items-center gap-1.5">
+                  <LucideIcons.Redo2 className="h-4 w-4" />
+                  <span>Redo</span>
+                </span>
               ) : (
                 asset.text ?? "Button"
               )}
+              {hasStageBadge ? (
+                <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
+                  <LucideIcons.ChevronDown className="h-3 w-3" />
+                </span>
+              ) : null}
             </Button>
           )
         })}

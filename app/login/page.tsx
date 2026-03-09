@@ -82,8 +82,10 @@ async function preloadPayloadIcons(payload: unknown) {
 
 export default function LoginPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/40 px-4 py-12">
-      <LoginCard />
+    <div className="min-h-screen bg-background">
+      <div className="flex min-h-screen items-center justify-center p-6 lg:p-12">
+        <LoginCard />
+      </div>
     </div>
   );
 }
@@ -146,17 +148,17 @@ function LoginCard() {
   };
 
   return (
-    <Card className="w-full max-w-md">
-      <CardHeader className="space-y-1">
+    <Card className="w-full max-w-md border-white/15 bg-slate-900/90">
+      <CardHeader className="space-y-2 text-center">
         <CardTitle className="text-2xl">Scouter Login</CardTitle>
         <CardDescription>
           Enter your login code and scouter name to continue.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-6">
         <form className="grid gap-4" onSubmit={handleSubmit}>
           <div className="grid gap-2">
-            <Label htmlFor="login-code">Login Code</Label>
+            <Label htmlFor="login-code" className="text-xs text-white/80">Login Code</Label>
             <Input
               id="login-code"
               name="loginCode"
@@ -164,11 +166,12 @@ function LoginCard() {
               autoComplete="one-time-code"
               value={loginCode}
               onChange={(event) => setLoginCode(event.target.value)}
+              className="border-white/15 bg-slate-900/90 text-white placeholder:text-white/55"
             />
             <QrCodeScanner onScan={setLoginCode} />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="scouter-name">Scouter Name</Label>
+            <Label htmlFor="scouter-name" className="text-xs text-white/80">Scouter Name</Label>
             <Input
               id="scouter-name"
               name="scouterName"
@@ -176,6 +179,7 @@ function LoginCard() {
               autoComplete="name"
               value={scouterName}
               onChange={(event) => setScouterName(event.target.value)}
+              className="border-white/15 bg-slate-900/90 text-white placeholder:text-white/55"
             />
           </div>
           <Button

@@ -46,7 +46,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [pathname, router])
 
   if (hideSidebar) {
-    return <>{children}</>
+    return (
+      <HeaderActionsContext.Provider value={headerActionsValue}>
+        {children}
+      </HeaderActionsContext.Provider>
+    )
   }
 
   return (
