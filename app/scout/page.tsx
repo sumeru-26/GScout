@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/dialog"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 
@@ -73,6 +75,18 @@ type AutoToggleAsset = {
   height: number
 }
 
+type ToggleSwitchAsset = {
+  id: string
+  type: "toggle-switch"
+  tag?: string
+  x: number
+  y: number
+  width: number
+  height: number
+  label?: string
+  value: boolean
+}
+
 type LogAsset = {
   id: string
   type: "log"
@@ -89,12 +103,25 @@ type MirrorLine = {
   endY: number
 }
 
+type BoxSize = {
+  width: number
+  height: number
+}
+
+type BoxBounds = {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 type ScoutAsset =
   | ButtonAsset
   | IconButtonAsset
   | CoverAsset
   | InputAsset
   | AutoToggleAsset
+  | ToggleSwitchAsset
   | LogAsset
 
 type ControlMode = "auto" | "teleop"
@@ -131,8 +158,47 @@ function toSizePercentFromScale(value: number) {
   return value
 }
 
+function getContainedBounds(containerSize: BoxSize, contentSize: BoxSize): BoxBounds {
+  const { width: containerWidth, height: containerHeight } = containerSize
+  const { width: contentWidth, height: contentHeight } = contentSize
+
+  if (containerWidth <= 0 || containerHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
+    return {
+      left: 0,
+      top: 0,
+      width: Math.max(0, containerWidth),
+      height: Math.max(0, containerHeight),
+    }
+  }
+
+  const scale = Math.min(containerWidth / contentWidth, containerHeight / contentHeight)
+  const width = contentWidth * scale
+  const height = contentHeight * scale
+
+  return {
+    left: (containerWidth - width) / 2,
+    top: (containerHeight - height) / 2,
+    width,
+    height,
+  }
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (isFiniteNumber(value)) return value
+
+  if (typeof value === "string") {
+    const normalized = value.trim()
+    if (normalized.length === 0) return null
+
+    const parsed = Number(normalized)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  return null
 }
 
 function clampPositionScale(value: number) {
@@ -181,6 +247,44 @@ function normalizeAutoToggleKind(value: unknown): value is "auto-toggle" {
   return normalized === "auto-toggle" || normalized === "autotoggle" || normalized === "auto_toggle"
 }
 
+function normalizeToggleSwitchKind(value: unknown): value is "toggle-switch" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return (
+    normalized === "toggle-switch" ||
+    normalized === "toggleswitch" ||
+    normalized === "toggle_switch" ||
+    normalized === "toggle"
+  )
+}
+
+function toBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === "true") return true
+    if (normalized === "false") return false
+  }
+  return null
+}
+
+function looksLikeToggleSwitch(item: Record<string, unknown>) {
+  if (
+    toFiniteNumber(item.x) === null ||
+    toFiniteNumber(item.y) === null ||
+    toFiniteNumber(item.width) === null ||
+    toFiniteNumber(item.height) === null
+  ) {
+    return false
+  }
+
+  const booleanValue = toBoolean(item.value)
+  if (booleanValue === null) return false
+
+  return true
+}
+
 function normalizeLogKind(value: unknown): value is "log" {
   return typeof value === "string" && value.toLowerCase() === "log"
 }
@@ -212,6 +316,62 @@ function parseAssetTag(item: Record<string, unknown>) {
   return normalized.length > 0 ? normalized : undefined
 }
 
+function collectNamedAssetItems(source: unknown, depth = 0): Record<string, unknown>[] {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return []
+  if (depth > 4) return []
+
+  const entries = Object.entries(source as Record<string, unknown>)
+  const collected: Record<string, unknown>[] = []
+
+  entries.forEach(([key, value]) => {
+    if (!value || typeof value !== "object") return
+
+    if (Array.isArray(value)) {
+      value.forEach((nestedValue) => {
+        collected.push(...collectNamedAssetItems(nestedValue, depth + 1))
+      })
+      return
+    }
+
+    const typedValue = value as Record<string, unknown>
+    const parsedX = toFiniteNumber(typedValue.x)
+    const parsedY = toFiniteNumber(typedValue.y)
+    const parsedWidth = toFiniteNumber(typedValue.width)
+    const parsedHeight = toFiniteNumber(typedValue.height)
+
+    const hasGeometry =
+      parsedX !== null &&
+      parsedY !== null &&
+      parsedWidth !== null &&
+      parsedHeight !== null
+
+    if (hasGeometry) {
+      collected.push({
+        ...typedValue,
+        x: parsedX,
+        y: parsedY,
+        width: parsedWidth,
+        height: parsedHeight,
+        id:
+          typeof typedValue.id === "string" && typedValue.id.trim().length > 0
+            ? typedValue.id
+            : key,
+        kind:
+          typeof typedValue.kind === "string" && typedValue.kind.trim().length > 0
+            ? typedValue.kind
+            : typeof typedValue.type === "string" && typedValue.type.trim().length > 0
+              ? typedValue.type
+              : key,
+      })
+      return
+    }
+
+    collected.push(...collectNamedAssetItems(typedValue, depth + 1))
+  })
+
+  return collected
+}
+
 function getPayloadItems(payload: unknown): unknown[] {
   if (!payload) return []
 
@@ -233,7 +393,17 @@ function getPayloadItems(payload: unknown): unknown[] {
         })()
       : []
 
-  return [...directItems, ...nestedItems]
+  const namedItems = collectNamedAssetItems(payload)
+
+  return [...directItems, ...nestedItems, ...namedItems]
+}
+
+function tryParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
 }
 
 function normalizeIconButtonKind(value: unknown): value is "icon-button" {
@@ -396,6 +566,10 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeAutoToggleKind(item.type) ||
         normalizeAutoToggleKind(item.kind) ||
         normalizeAutoToggleKind(item.key) ||
+        normalizeToggleSwitchKind(item.type) ||
+        normalizeToggleSwitchKind(item.kind) ||
+        normalizeToggleSwitchKind(item.key) ||
+        looksLikeToggleSwitch(item) ||
         normalizeLogKind(item.type) ||
         normalizeLogKind(item.kind) ||
         normalizeLogKind(item.key) ||
@@ -422,6 +596,11 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeAutoToggleKind(item.type) ||
         normalizeAutoToggleKind(item.kind) ||
         normalizeAutoToggleKind(item.key)
+      const isToggleSwitch =
+        normalizeToggleSwitchKind(item.type) ||
+        normalizeToggleSwitchKind(item.kind) ||
+        normalizeToggleSwitchKind(item.key) ||
+        looksLikeToggleSwitch(item)
       const isLog = normalizeLogKind(item.type) || normalizeLogKind(item.kind) || normalizeLogKind(item.key)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
       const actionButtonKind = normalizeActionButtonKind(item.type)
@@ -470,6 +649,25 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           width: clampSizeScale(item.width as number),
           height: clampSizeScale(item.height as number),
         } satisfies AutoToggleAsset
+      }
+
+      if (isToggleSwitch) {
+        return {
+          id,
+          type: "toggle-switch",
+          tag: parseAssetTag(item),
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label
+              : typeof item.text === "string" && item.text.trim().length > 0
+                ? item.text
+                : undefined,
+          value: toBoolean(item.value) ?? false,
+        } satisfies ToggleSwitchAsset
       }
 
       if (isLog) {
@@ -529,11 +727,14 @@ export default function ScoutPage() {
   const isFullscreen = isNativeFullscreen || isFallbackFullscreen
   const [isSwapped, setIsSwapped] = useState(false)
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null)
+  const [containerSize, setContainerSize] = useState<BoxSize>({ width: 0, height: 0 })
+  const [backgroundImageSize, setBackgroundImageSize] = useState<BoxSize | null>(null)
   const [scoutAssets, setScoutAssets] = useState<ScoutAsset[]>([])
   const [mirrorLine, setMirrorLine] = useState<MirrorLine | null>(null)
   const [tagStack, setTagStack] = useState<string[]>([])
   const [redoTagStack, setRedoTagStack] = useState<string[]>([])
   const [inputValuesByKey, setInputValuesByKey] = useState<Record<string, string>>({})
+  const [toggleValuesByKey, setToggleValuesByKey] = useState<Record<string, boolean>>({})
   const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
@@ -559,13 +760,127 @@ export default function ScoutPage() {
 
     try {
       const parsedPayload = JSON.parse(storedPayload) as unknown
-      setScoutAssets(parseScoutAssets(parsedPayload))
-      setMirrorLine(parseMirrorLine(parsedPayload))
+      const normalizedPayload = typeof parsedPayload === "string" ? tryParseJson(parsedPayload) : parsedPayload
+      setScoutAssets(parseScoutAssets(normalizedPayload))
+      setMirrorLine(parseMirrorLine(normalizedPayload))
     } catch {
       setScoutAssets([])
       setMirrorLine(null)
     }
   }, [])
+
+  useEffect(() => {
+    const element = containerRef.current
+    if (!element) return
+
+    const updateSize = () => {
+      setContainerSize({
+        width: element.clientWidth,
+        height: element.clientHeight,
+      })
+    }
+
+    updateSize()
+
+    const observer = new ResizeObserver(() => {
+      updateSize()
+    })
+
+    observer.observe(element)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [isFullscreen])
+
+  useEffect(() => {
+    if (!backgroundImage) {
+      setBackgroundImageSize(null)
+      return
+    }
+
+    let cancelled = false
+    const image = new Image()
+
+    image.onload = () => {
+      if (cancelled) return
+
+      setBackgroundImageSize({
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      })
+    }
+
+    image.onerror = () => {
+      if (cancelled) return
+      setBackgroundImageSize(null)
+    }
+
+    image.src = backgroundImage
+
+    return () => {
+      cancelled = true
+    }
+  }, [backgroundImage])
+
+  const measuredFieldBounds = useMemo(() => {
+    if (containerSize.width <= 0 || containerSize.height <= 0) return null
+
+    if (!backgroundImage || !backgroundImageSize) {
+      return {
+        left: 0,
+        top: 0,
+        width: containerSize.width,
+        height: containerSize.height,
+      } satisfies BoxBounds
+    }
+
+    return getContainedBounds(containerSize, backgroundImageSize)
+  }, [backgroundImage, backgroundImageSize, containerSize])
+
+  const getAssetStyle = useCallback(
+    (asset: { x: number; y: number; width: number; height: number }, includeHeight: boolean) => {
+      if (!measuredFieldBounds) {
+        const percentBaseStyle = {
+          left: `${toPercentFromScale(asset.x)}%`,
+          top: `${100 - toPercentFromScale(asset.y)}%`,
+          width: `${toSizePercentFromScale(asset.width)}%`,
+          transform: "translate(-50%, -50%)",
+        }
+
+        if (!includeHeight) {
+          return percentBaseStyle
+        }
+
+        return {
+          ...percentBaseStyle,
+          height: `${toSizePercentFromScale(asset.height)}%`,
+        }
+      }
+
+      const xPercent = toPercentFromScale(asset.x) / 100
+      const yPercent = (100 - toPercentFromScale(asset.y)) / 100
+      const widthPercent = toSizePercentFromScale(asset.width) / 100
+      const heightPercent = toSizePercentFromScale(asset.height) / 100
+
+      const baseStyle = {
+        left: measuredFieldBounds.left + measuredFieldBounds.width * xPercent,
+        top: measuredFieldBounds.top + measuredFieldBounds.height * yPercent,
+        width: measuredFieldBounds.width * widthPercent,
+        transform: "translate(-50%, -50%)",
+      }
+
+      if (!includeHeight) {
+        return baseStyle
+      }
+
+      return {
+        ...baseStyle,
+        height: measuredFieldBounds.height * heightPercent,
+      }
+    },
+    [measuredFieldBounds]
+  )
 
   const displayedAssets = useMemo(() => {
     if (!isSwapped || !mirrorLine) return scoutAssets
@@ -589,11 +904,27 @@ export default function ScoutPage() {
   const buttonAssets = useMemo(
     () =>
       displayedAssets.filter(
-        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset | AutoToggleAsset | LogAsset =>
+        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset | AutoToggleAsset | ToggleSwitchAsset | LogAsset =>
           asset.type !== "cover"
       ),
     [displayedAssets]
   )
+
+  useEffect(() => {
+    const initialToggleValues = scoutAssets
+      .filter((asset): asset is ToggleSwitchAsset => asset.type === "toggle-switch")
+      .reduce<Record<string, boolean>>((accumulator, asset) => {
+        const toggleKey =
+          typeof asset.tag === "string" && asset.tag.trim().length > 0
+            ? asset.tag
+            : asset.id
+
+        accumulator[toggleKey] = asset.value
+        return accumulator
+      }, {})
+
+    setToggleValuesByKey(initialToggleValues)
+  }, [scoutAssets])
 
   const recentTagLog = useMemo(() => {
     return [...tagStack].slice(-5).reverse()
@@ -696,7 +1027,7 @@ export default function ScoutPage() {
   }, [redoTagStack])
 
   const handleSubmit = useCallback(async () => {
-    const output: Record<string, number | string> = {}
+    const output: Record<string, number | string | boolean> = {}
 
     const uniqueButtonAndIconTags = [
       ...new Set(
@@ -718,6 +1049,14 @@ export default function ScoutPage() {
       ),
     ]
 
+    const uniqueToggleTags = [
+      ...new Set(
+        scoutAssets
+          .filter((asset): asset is ToggleSwitchAsset => asset.type === "toggle-switch")
+          .map((asset) => (asset.tag && asset.tag.trim().length > 0 ? asset.tag : asset.id))
+      ),
+    ]
+
     const uniqueModePrefixedTags = [
       ...new Set(
         uniqueButtonAndIconTags.flatMap((tag) => {
@@ -735,12 +1074,20 @@ export default function ScoutPage() {
       output[tag] = ""
     })
 
+    uniqueToggleTags.forEach((tag) => {
+      output[tag] = false
+    })
+
     uniqueModePrefixedTags.forEach((tag) => {
       output[tag] = tagStack.filter((stackTag) => stackTag === tag).length
     })
 
     uniqueInputTags.forEach((tag) => {
       output[tag] = inputValuesByKey[tag] ?? ""
+    })
+
+    uniqueToggleTags.forEach((tag) => {
+      output[tag] = toggleValuesByKey[tag] ?? false
     })
 
     output.scouter = scouterName
@@ -761,7 +1108,7 @@ export default function ScoutPage() {
     setIsSubmitDialogOpen(true)
 
     console.log("[ScoutPage] submit payload:", output)
-  }, [inputValuesByKey, scoutAssets, scouterName, tagStack])
+  }, [inputValuesByKey, scoutAssets, scouterName, tagStack, toggleValuesByKey])
 
   useEffect(() => {
     console.log("[ScoutPage] tagStack:", tagStack)
@@ -879,13 +1226,7 @@ export default function ScoutPage() {
         ) : null}
 
         {coverAssets.map((asset, index) => {
-          const commonStyle = {
-            left: `${toPercentFromScale(asset.x)}%`,
-            top: `${100 - toPercentFromScale(asset.y)}%`,
-            width: `${toSizePercentFromScale(asset.width)}%`,
-            height: `${toSizePercentFromScale(asset.height)}%`,
-            transform: "translate(-50%, -50%)",
-          }
+          const commonStyle = getAssetStyle(asset, true)
 
           return (
             <div
@@ -896,17 +1237,8 @@ export default function ScoutPage() {
           )
         })}
         {buttonAssets.map((asset, index) => {
-          const baseStyle = {
-            left: `${toPercentFromScale(asset.x)}%`,
-            top: `${100 - toPercentFromScale(asset.y)}%`,
-            width: `${toSizePercentFromScale(asset.width)}%`,
-            transform: "translate(-50%, -50%)",
-          }
-
-          const sizedStyle = {
-            ...baseStyle,
-            height: `${toSizePercentFromScale(asset.height)}%`,
-          }
+          const baseStyle = getAssetStyle(asset, false)
+          const sizedStyle = getAssetStyle(asset, true)
 
           if (asset.type === "icon-button") {
             const Icon = getLucideIcon(asset.iconName)
@@ -974,6 +1306,40 @@ export default function ScoutPage() {
             )
           }
 
+          if (asset.type === "toggle-switch") {
+            const toggleKey =
+              typeof asset.tag === "string" && asset.tag.trim().length > 0
+                ? asset.tag
+                : asset.id
+            const isChecked = toggleValuesByKey[toggleKey] ?? asset.value
+            const toggleId = `toggle-${asset.id ?? index}`
+
+            return (
+              <div
+                key={asset.id ?? `toggle-switch-${index}`}
+                className="absolute flex items-center justify-center cursor-default"
+                style={sizedStyle}
+              >
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    id={toggleId}
+                    className="cursor-pointer"
+                    checked={isChecked}
+                    onCheckedChange={(checked) => {
+                      setToggleValuesByKey((previous) => ({
+                        ...previous,
+                        [toggleKey]: checked,
+                      }))
+                    }}
+                  />
+                  <Label htmlFor={toggleId} className="cursor-pointer text-xs">
+                    {asset.label ?? "Toggle"}
+                  </Label>
+                </div>
+              </div>
+            )
+          }
+
           if (asset.type === "log") {
             return (
               <div
@@ -1035,6 +1401,19 @@ export default function ScoutPage() {
                   setTagStack([])
                   setRedoTagStack([])
                   setInputValuesByKey({})
+                  setToggleValuesByKey(
+                    scoutAssets
+                      .filter((candidate): candidate is ToggleSwitchAsset => candidate.type === "toggle-switch")
+                      .reduce<Record<string, boolean>>((accumulator, candidate) => {
+                        const toggleKey =
+                          typeof candidate.tag === "string" && candidate.tag.trim().length > 0
+                            ? candidate.tag
+                            : candidate.id
+
+                        accumulator[toggleKey] = candidate.value
+                        return accumulator
+                      }, {})
+                  )
                 }
 
                 if (asset.buttonKind === "swap") {
