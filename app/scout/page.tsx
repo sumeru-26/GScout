@@ -23,6 +23,8 @@ import {
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 
@@ -31,6 +33,7 @@ type ButtonAsset = {
   type: "button"
   buttonKind: "button" | "swap" | "undo" | "redo" | "submit" | "reset"
   tag?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -42,11 +45,14 @@ type IconButtonAsset = {
   id: string
   type: "icon-button"
   tag?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
   height: number
   iconName: string
+  outlineColor?: string
+  fillColor?: string
 }
 
 type CoverAsset = {
@@ -79,6 +85,20 @@ type AutoToggleAsset = {
   height: number
 }
 
+type ToggleSwitchAsset = {
+  id: string
+  type: "toggle-switch"
+  tag?: string
+  x: number
+  y: number
+  width: number
+  height: number
+  label?: string
+  value: boolean
+  textAlign?: "left" | "center" | "right"
+  textSize?: number
+}
+
 type LogAsset = {
   id: string
   type: "log"
@@ -95,17 +115,32 @@ type MirrorLine = {
   endY: number
 }
 
+type BoxSize = {
+  width: number
+  height: number
+}
+
+type BoxBounds = {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 type ScoutAsset =
   | ButtonAsset
   | IconButtonAsset
   | CoverAsset
   | InputAsset
   | AutoToggleAsset
+  | ToggleSwitchAsset
   | LogAsset
 
 type ControlMode = "auto" | "teleop"
 
 const AUTO_TIMER_DURATION_MS = 25_000
+const TOGGLE_SIZE = { width: 52, height: 28 } as const
+const LOG_SIZE = { width: 280, height: 120 } as const
 
 type FullscreenDocument = Document & {
   webkitFullscreenElement?: Element | null
@@ -137,8 +172,47 @@ function toSizePercentFromScale(value: number) {
   return value
 }
 
+function getContainedBounds(containerSize: BoxSize, contentSize: BoxSize): BoxBounds {
+  const { width: containerWidth, height: containerHeight } = containerSize
+  const { width: contentWidth, height: contentHeight } = contentSize
+
+  if (containerWidth <= 0 || containerHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
+    return {
+      left: 0,
+      top: 0,
+      width: Math.max(0, containerWidth),
+      height: Math.max(0, containerHeight),
+    }
+  }
+
+  const scale = Math.min(containerWidth / contentWidth, containerHeight / contentHeight)
+  const width = contentWidth * scale
+  const height = contentHeight * scale
+
+  return {
+    left: (containerWidth - width) / 2,
+    top: (containerHeight - height) / 2,
+    width,
+    height,
+  }
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (isFiniteNumber(value)) return value
+
+  if (typeof value === "string") {
+    const normalized = value.trim()
+    if (normalized.length === 0) return null
+
+    const parsed = Number(normalized)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  return null
 }
 
 function clampPositionScale(value: number) {
@@ -185,6 +259,44 @@ function normalizeAutoToggleKind(value: unknown): value is "auto-toggle" {
 
   const normalized = value.toLowerCase()
   return normalized === "auto-toggle" || normalized === "autotoggle" || normalized === "auto_toggle"
+}
+
+function normalizeToggleSwitchKind(value: unknown): value is "toggle-switch" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return (
+    normalized === "toggle-switch" ||
+    normalized === "toggleswitch" ||
+    normalized === "toggle_switch" ||
+    normalized === "toggle"
+  )
+}
+
+function toBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === "true") return true
+    if (normalized === "false") return false
+  }
+  return null
+}
+
+function looksLikeToggleSwitch(item: Record<string, unknown>) {
+  if (
+    toFiniteNumber(item.x) === null ||
+    toFiniteNumber(item.y) === null ||
+    toFiniteNumber(item.width) === null ||
+    toFiniteNumber(item.height) === null
+  ) {
+    return false
+  }
+
+  const booleanValue = toBoolean(item.value)
+  if (booleanValue === null) return false
+
+  return true
 }
 
 function normalizeLogKind(value: unknown): value is "log" {
@@ -234,6 +346,62 @@ function parseAssetTag(item: Record<string, unknown>) {
   return normalized.length > 0 ? normalized : undefined
 }
 
+function collectNamedAssetItems(source: unknown, depth = 0): Record<string, unknown>[] {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return []
+  if (depth > 4) return []
+
+  const entries = Object.entries(source as Record<string, unknown>)
+  const collected: Record<string, unknown>[] = []
+
+  entries.forEach(([key, value]) => {
+    if (!value || typeof value !== "object") return
+
+    if (Array.isArray(value)) {
+      value.forEach((nestedValue) => {
+        collected.push(...collectNamedAssetItems(nestedValue, depth + 1))
+      })
+      return
+    }
+
+    const typedValue = value as Record<string, unknown>
+    const parsedX = toFiniteNumber(typedValue.x)
+    const parsedY = toFiniteNumber(typedValue.y)
+    const parsedWidth = toFiniteNumber(typedValue.width)
+    const parsedHeight = toFiniteNumber(typedValue.height)
+
+    const hasGeometry =
+      parsedX !== null &&
+      parsedY !== null &&
+      parsedWidth !== null &&
+      parsedHeight !== null
+
+    if (hasGeometry) {
+      collected.push({
+        ...typedValue,
+        x: parsedX,
+        y: parsedY,
+        width: parsedWidth,
+        height: parsedHeight,
+        id:
+          typeof typedValue.id === "string" && typedValue.id.trim().length > 0
+            ? typedValue.id
+            : key,
+        kind:
+          typeof typedValue.kind === "string" && typedValue.kind.trim().length > 0
+            ? typedValue.kind
+            : typeof typedValue.type === "string" && typedValue.type.trim().length > 0
+              ? typedValue.type
+              : key,
+      })
+      return
+    }
+
+    collected.push(...collectNamedAssetItems(typedValue, depth + 1))
+  })
+
+  return collected
+}
+
 function getPayloadItems(payload: unknown): unknown[] {
   if (!payload) return []
 
@@ -255,7 +423,17 @@ function getPayloadItems(payload: unknown): unknown[] {
         })()
       : []
 
-  return [...directItems, ...nestedItems]
+  const namedItems = collectNamedAssetItems(payload)
+
+  return [...directItems, ...nestedItems, ...namedItems]
+}
+
+function tryParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
 }
 
 function normalizeIconButtonKind(value: unknown): value is "icon-button" {
@@ -418,6 +596,10 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeAutoToggleKind(item.type) ||
         normalizeAutoToggleKind(item.kind) ||
         normalizeAutoToggleKind(item.key) ||
+        normalizeToggleSwitchKind(item.type) ||
+        normalizeToggleSwitchKind(item.kind) ||
+        normalizeToggleSwitchKind(item.key) ||
+        looksLikeToggleSwitch(item) ||
         normalizeLogKind(item.type) ||
         normalizeLogKind(item.kind) ||
         normalizeLogKind(item.key) ||
@@ -445,6 +627,11 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeAutoToggleKind(item.type) ||
         normalizeAutoToggleKind(item.kind) ||
         normalizeAutoToggleKind(item.key)
+      const isToggleSwitch =
+        normalizeToggleSwitchKind(item.type) ||
+        normalizeToggleSwitchKind(item.kind) ||
+        normalizeToggleSwitchKind(item.key) ||
+        looksLikeToggleSwitch(item)
       const isLog = normalizeLogKind(item.type) || normalizeLogKind(item.kind) || normalizeLogKind(item.key)
       const isTeamSelect = isTeamSelectAsset(item)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
@@ -496,6 +683,44 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         } satisfies AutoToggleAsset
       }
 
+      if (isToggleSwitch) {
+        const toggleTextAlign =
+          typeof item.textAlign === "string"
+            ? item.textAlign.toLowerCase()
+            : typeof item.toggleTextAlign === "string"
+              ? item.toggleTextAlign.toLowerCase()
+              : undefined
+
+        const toggleTextSize =
+          typeof item.textSize === "number" && Number.isFinite(item.textSize)
+            ? item.textSize
+            : typeof item.toggleTextSize === "number" && Number.isFinite(item.toggleTextSize)
+              ? item.toggleTextSize
+              : undefined
+
+        return {
+          id,
+          type: "toggle-switch",
+          tag: parseAssetTag(item),
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label
+              : typeof item.text === "string" && item.text.trim().length > 0
+                ? item.text
+                : undefined,
+          value: toBoolean(item.value) ?? false,
+          textAlign:
+            toggleTextAlign === "left" || toggleTextAlign === "right" || toggleTextAlign === "center"
+              ? toggleTextAlign
+              : "center",
+          textSize: toggleTextSize,
+        } satisfies ToggleSwitchAsset
+      }
+
       if (isLog) {
         return {
           id,
@@ -512,6 +737,10 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "icon-button",
           tag: parseAssetTag(item),
+          stageParentTag:
+            typeof item.stageParentTag === "string" && item.stageParentTag.trim().length > 0
+              ? item.stageParentTag
+              : undefined,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -520,6 +749,14 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
             typeof item.iconName === "string" && item.iconName.trim().length > 0
               ? item.iconName.trim().toLowerCase()
               : "circle",
+          outlineColor:
+            typeof item.outlineColor === "string" && item.outlineColor.trim().length > 0
+              ? item.outlineColor
+              : undefined,
+          fillColor:
+            typeof item.fillColor === "string" && item.fillColor.trim().length > 0
+              ? item.fillColor
+              : undefined,
         } satisfies IconButtonAsset
       }
 
@@ -557,11 +794,14 @@ export default function ScoutPage() {
   const isFullscreen = isNativeFullscreen || isFallbackFullscreen
   const [isSwapped, setIsSwapped] = useState(false)
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null)
+  const [containerSize, setContainerSize] = useState<BoxSize>({ width: 0, height: 0 })
+  const [backgroundImageSize, setBackgroundImageSize] = useState<BoxSize | null>(null)
   const [scoutAssets, setScoutAssets] = useState<ScoutAsset[]>([])
   const [mirrorLine, setMirrorLine] = useState<MirrorLine | null>(null)
   const [tagStack, setTagStack] = useState<string[]>([])
   const [redoTagStack, setRedoTagStack] = useState<string[]>([])
   const [inputValuesByKey, setInputValuesByKey] = useState<Record<string, string>>({})
+  const [toggleValuesByKey, setToggleValuesByKey] = useState<Record<string, boolean>>({})
   const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
@@ -588,13 +828,127 @@ export default function ScoutPage() {
 
     try {
       const parsedPayload = JSON.parse(storedPayload) as unknown
-      setScoutAssets(parseScoutAssets(parsedPayload))
-      setMirrorLine(parseMirrorLine(parsedPayload))
+      const normalizedPayload = typeof parsedPayload === "string" ? tryParseJson(parsedPayload) : parsedPayload
+      setScoutAssets(parseScoutAssets(normalizedPayload))
+      setMirrorLine(parseMirrorLine(normalizedPayload))
     } catch {
       setScoutAssets([])
       setMirrorLine(null)
     }
   }, [])
+
+  useEffect(() => {
+    const element = containerRef.current
+    if (!element) return
+
+    const updateSize = () => {
+      setContainerSize({
+        width: element.clientWidth,
+        height: element.clientHeight,
+      })
+    }
+
+    updateSize()
+
+    const observer = new ResizeObserver(() => {
+      updateSize()
+    })
+
+    observer.observe(element)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [isFullscreen])
+
+  useEffect(() => {
+    if (!backgroundImage) {
+      setBackgroundImageSize(null)
+      return
+    }
+
+    let cancelled = false
+    const image = new Image()
+
+    image.onload = () => {
+      if (cancelled) return
+
+      setBackgroundImageSize({
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      })
+    }
+
+    image.onerror = () => {
+      if (cancelled) return
+      setBackgroundImageSize(null)
+    }
+
+    image.src = backgroundImage
+
+    return () => {
+      cancelled = true
+    }
+  }, [backgroundImage])
+
+  const measuredFieldBounds = useMemo(() => {
+    if (containerSize.width <= 0 || containerSize.height <= 0) return null
+
+    if (!backgroundImage || !backgroundImageSize) {
+      return {
+        left: 0,
+        top: 0,
+        width: containerSize.width,
+        height: containerSize.height,
+      } satisfies BoxBounds
+    }
+
+    return getContainedBounds(containerSize, backgroundImageSize)
+  }, [backgroundImage, backgroundImageSize, containerSize])
+
+  const getAssetStyle = useCallback(
+    (asset: { x: number; y: number; width: number; height: number }, includeHeight: boolean) => {
+      if (!measuredFieldBounds) {
+        const percentBaseStyle = {
+          left: `${toPercentFromScale(asset.x)}%`,
+          top: `${100 - toPercentFromScale(asset.y)}%`,
+          width: `${toSizePercentFromScale(asset.width)}%`,
+          transform: "translate(-50%, -50%)",
+        }
+
+        if (!includeHeight) {
+          return percentBaseStyle
+        }
+
+        return {
+          ...percentBaseStyle,
+          height: `${toSizePercentFromScale(asset.height)}%`,
+        }
+      }
+
+      const xPercent = toPercentFromScale(asset.x) / 100
+      const yPercent = (100 - toPercentFromScale(asset.y)) / 100
+      const widthPercent = toSizePercentFromScale(asset.width) / 100
+      const heightPercent = toSizePercentFromScale(asset.height) / 100
+
+      const baseStyle = {
+        left: measuredFieldBounds.left + measuredFieldBounds.width * xPercent,
+        top: measuredFieldBounds.top + measuredFieldBounds.height * yPercent,
+        width: measuredFieldBounds.width * widthPercent,
+        transform: "translate(-50%, -50%)",
+      }
+
+      if (!includeHeight) {
+        return baseStyle
+      }
+
+      return {
+        ...baseStyle,
+        height: measuredFieldBounds.height * heightPercent,
+      }
+    },
+    [measuredFieldBounds]
+  )
 
   const displayedAssets = useMemo(() => {
     if (!isSwapped || !mirrorLine) return scoutAssets
@@ -618,15 +972,27 @@ export default function ScoutPage() {
   const buttonAssets = useMemo(
     () =>
       displayedAssets.filter(
-        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset | AutoToggleAsset | LogAsset =>
+        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset | AutoToggleAsset | ToggleSwitchAsset | LogAsset =>
           asset.type !== "cover"
       ),
     [displayedAssets]
   )
 
-  const recentTagLog = useMemo(() => {
-    return [...tagStack].slice(-5).reverse()
-  }, [tagStack])
+  useEffect(() => {
+    const initialToggleValues = scoutAssets
+      .filter((asset): asset is ToggleSwitchAsset => asset.type === "toggle-switch")
+      .reduce<Record<string, boolean>>((accumulator, asset) => {
+        const toggleKey =
+          typeof asset.tag === "string" && asset.tag.trim().length > 0
+            ? asset.tag
+            : asset.id
+
+        accumulator[toggleKey] = asset.value
+        return accumulator
+      }, {})
+
+    setToggleValuesByKey(initialToggleValues)
+  }, [scoutAssets])
 
   const setTeleopMode = useCallback(() => {
     setControlMode("teleop")
@@ -725,7 +1091,7 @@ export default function ScoutPage() {
   }, [redoTagStack])
 
   const handleSubmit = useCallback(async () => {
-    const output: Record<string, number | string> = {}
+    const output: Record<string, number | string | boolean> = {}
 
     const uniqueButtonAndIconTags = [
       ...new Set(
@@ -748,6 +1114,14 @@ export default function ScoutPage() {
       ),
     ]
 
+    const uniqueToggleTags = [
+      ...new Set(
+        scoutAssets
+          .filter((asset): asset is ToggleSwitchAsset => asset.type === "toggle-switch")
+          .map((asset) => (asset.tag && asset.tag.trim().length > 0 ? asset.tag : asset.id))
+      ),
+    ]
+
     const uniqueModePrefixedTags = [
       ...new Set(
         uniqueButtonAndIconTags.flatMap((tag) => {
@@ -765,12 +1139,20 @@ export default function ScoutPage() {
       output[tag] = ""
     })
 
+    uniqueToggleTags.forEach((tag) => {
+      output[tag] = false
+    })
+
     uniqueModePrefixedTags.forEach((tag) => {
       output[tag] = tagStack.filter((stackTag) => stackTag === tag).length
     })
 
     uniqueInputTags.forEach((tag) => {
       output[tag] = inputValuesByKey[tag] ?? ""
+    })
+
+    uniqueToggleTags.forEach((tag) => {
+      output[tag] = toggleValuesByKey[tag] ?? false
     })
 
     output.team = teamValue
@@ -882,76 +1264,75 @@ export default function ScoutPage() {
     <div
       ref={containerRef}
       className={cn(
-        "relative rounded-lg border border-dashed",
-        backgroundImage ? "bg-transparent" : "bg-muted/20",
-        isFullscreen ? "min-h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
+        "relative overflow-hidden border border-white/10 bg-slate-950",
+        isFullscreen
+          ? "h-[100dvh] w-full rounded-none border-0"
+          : "min-h-[calc(100vh-3.5rem)] rounded-xl"
       )}
       style={
         backgroundImage
           ? {
+              backgroundColor: "#030919",
               backgroundImage: `url("${backgroundImage}")`,
               backgroundSize: "contain",
               backgroundPosition: "center",
               backgroundRepeat: "no-repeat",
             }
-          : undefined
+          : { backgroundColor: "#030919" }
       }
     >
       <div
         className={cn(
           "relative",
-          isFullscreen ? "min-h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
+          isFullscreen ? "h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
         )}
       >
         {isFallbackFullscreen ? (
-          <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md bg-background/90 px-3 py-1 text-xs text-muted-foreground shadow-sm">
+          <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-white/15 bg-slate-900/90 px-3 py-1 text-xs text-white/80 shadow-sm">
             App fullscreen mode (native fullscreen is not available on this browser)
           </div>
         ) : null}
 
         {coverAssets.map((asset, index) => {
-          const commonStyle = {
-            left: `${toPercentFromScale(asset.x)}%`,
-            top: `${100 - toPercentFromScale(asset.y)}%`,
-            width: `${toSizePercentFromScale(asset.width)}%`,
-            height: `${toSizePercentFromScale(asset.height)}%`,
-            transform: "translate(-50%, -50%)",
-          }
+          const commonStyle = getAssetStyle(asset, true)
 
           return (
             <div
               key={asset.id ?? `cover-${index}`}
-              className="absolute bg-background"
+              className="absolute rounded-md border border-white/10 bg-slate-900 transition-all duration-150 ease-out"
               style={commonStyle}
             />
           )
         })}
         {buttonAssets.map((asset, index) => {
-          const baseStyle = {
-            left: `${toPercentFromScale(asset.x)}%`,
-            top: `${100 - toPercentFromScale(asset.y)}%`,
-            width: `${toSizePercentFromScale(asset.width)}%`,
-            transform: "translate(-50%, -50%)",
-          }
-
-          const sizedStyle = {
-            ...baseStyle,
-            height: `${toSizePercentFromScale(asset.height)}%`,
-          }
+          const baseStyle = getAssetStyle(asset, false)
+          const sizedStyle = getAssetStyle(asset, true)
 
           if (asset.type === "icon-button") {
             const Icon = getLucideIcon(asset.iconName)
+            const hasStageBadge = Boolean(asset.stageParentTag)
 
             return (
               <Button
                 key={asset.id ?? `icon-button-${index}`}
                 type="button"
                 variant="outline"
-                className="absolute p-0"
+                className="absolute rounded-lg border border-white/20 bg-slate-900 p-0 text-white hover:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
                 style={sizedStyle}
                 onClick={() => pushTagToStack(asset.tag)}
               >
-                <Icon />
+                <Icon
+                  className="h-5 w-5"
+                  style={{
+                    stroke: asset.outlineColor ?? "currentColor",
+                    fill: asset.fillColor ?? "none",
+                  }}
+                />
+                {hasStageBadge ? (
+                  <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
+                    <LucideIcons.ChevronDown className="h-3 w-3" />
+                  </span>
+                ) : null}
               </Button>
             )
           }
@@ -965,13 +1346,13 @@ export default function ScoutPage() {
             return (
               <Field
                 key={asset.id ?? `input-${index}`}
-                className="absolute"
-                style={baseStyle}
+                className="absolute flex h-full flex-col gap-2 transition-all duration-150 ease-out"
+                style={sizedStyle}
               >
-                {asset.label ? <FieldLabel>{asset.label}</FieldLabel> : null}
+                {asset.label ? <FieldLabel className="text-xs text-white/80">{asset.label}</FieldLabel> : null}
                 <Input
                   value={inputValuesByKey[inputStateKey] ?? ""}
-                  onChange={(event) => {
+                  onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                     const nextValue = event.target.value
                     setInputValuesByKey((previous) => ({
                       ...previous,
@@ -980,6 +1361,7 @@ export default function ScoutPage() {
                   }}
                   placeholder={asset.placeholder}
                   aria-label={asset.label ?? "Input"}
+                  className="h-full border-white/15 bg-slate-900/90 text-white placeholder:text-white/50"
                 />
               </Field>
             )
@@ -992,39 +1374,135 @@ export default function ScoutPage() {
                 type="single"
                 value={controlMode}
                 onValueChange={handleAutoToggleGroupChange}
-                className="absolute rounded-md border bg-background/90 p-1"
+                className="absolute grid h-full w-full grid-cols-2 gap-1 rounded-md border border-white/20 bg-slate-900/90 p-1 transition-all duration-150 ease-out"
                 style={sizedStyle}
               >
-                <ToggleGroupItem value="auto" className="h-full flex-1">
+                <ToggleGroupItem
+                  value="auto"
+                  className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+                >
                   {autoTimerLabel}
                 </ToggleGroupItem>
-                <ToggleGroupItem value="teleop" className="h-full flex-1">
+                <ToggleGroupItem
+                  value="teleop"
+                  className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+                >
                   Teleop
                 </ToggleGroupItem>
               </ToggleGroup>
             )
           }
 
+          if (asset.type === "toggle-switch") {
+            const toggleKey =
+              typeof asset.tag === "string" && asset.tag.trim().length > 0
+                ? asset.tag
+                : asset.id
+            const isChecked = toggleValuesByKey[toggleKey] ?? asset.value
+            const toggleId = `toggle-${asset.id ?? index}`
+            const textAlign = asset.textAlign ?? "center"
+            const textClass =
+              textAlign === "left"
+                ? "text-left"
+                : textAlign === "right"
+                  ? "text-right"
+                  : "text-center"
+            const textSize = asset.textSize ?? 10
+            const fieldBoundsWidth = measuredFieldBounds?.width ?? containerSize.width
+            const fieldBoundsHeight = measuredFieldBounds?.height ?? containerSize.height
+            const togglePixelWidth = fieldBoundsWidth * (asset.width / 100)
+            const togglePixelHeight = fieldBoundsHeight * (asset.height / 100)
+            const switchScale = Math.max(
+              0.35,
+              Math.min(
+                3.5,
+                Math.min(togglePixelWidth / TOGGLE_SIZE.width, togglePixelHeight / TOGGLE_SIZE.height)
+              )
+            )
+            const switchPixelWidth = 32 * switchScale
+            const switchPixelHeight = 18 * switchScale
+            const resolvedTextSize = Math.max(6, textSize * switchScale)
+
+            return (
+              <div
+                key={asset.id ?? `toggle-switch-${index}`}
+                className="absolute flex items-center justify-center"
+                style={sizedStyle}
+              >
+                <div className="flex h-full w-full items-center gap-2 overflow-visible">
+                  <div
+                    className="flex flex-none items-center justify-start"
+                    style={{
+                      width: switchPixelWidth,
+                      height: switchPixelHeight,
+                      transform: `scale(${switchScale})`,
+                      transformOrigin: "left center",
+                    }}
+                  >
+                    <Switch
+                      id={toggleId}
+                      checked={isChecked}
+                      disabled={!isPreviewMode}
+                      onCheckedChange={(checked: boolean) => {
+                        if (!isPreviewMode) return
+
+                        setToggleValuesByKey((previous) => ({
+                          ...previous,
+                          [toggleKey]: checked,
+                        }))
+                      }}
+                    />
+                  </div>
+                  {asset.label ? (
+                    <Label
+                      htmlFor={toggleId}
+                      className={`shrink-0 whitespace-nowrap leading-none text-white/80 ${textClass}`}
+                      style={{ fontSize: resolvedTextSize }}
+                    >
+                      {asset.label}
+                    </Label>
+                  ) : null}
+                </div>
+              </div>
+            )
+          }
+
           if (asset.type === "log") {
+            const fieldBoundsWidth = measuredFieldBounds?.width ?? containerSize.width
+            const fieldBoundsHeight = measuredFieldBounds?.height ?? containerSize.height
+            const logPixelWidth = fieldBoundsWidth * (asset.width / 100)
+            const logPixelHeight = fieldBoundsHeight * (asset.height / 100)
+            const logScale = Math.max(
+              0.45,
+              Math.min(3.5, Math.min(logPixelWidth / LOG_SIZE.width, logPixelHeight / LOG_SIZE.height))
+            )
+            const resolvedLogFontSize = Math.max(8, 11 * logScale)
+            const logLineHeightMultiplier = 1.35
+            const estimatedAvailableHeight = Math.max(0, logPixelHeight - 36)
+            const visibleLineCount = Math.max(
+              1,
+              Math.floor(estimatedAvailableHeight / (resolvedLogFontSize * logLineHeightMultiplier))
+            )
+            const visibleLogEntries = [...tagStack].slice(-visibleLineCount).reverse()
+
             return (
               <div
                 key={asset.id ?? `log-${index}`}
-                className="absolute overflow-hidden rounded-md border bg-background/90 p-2"
+                className="absolute overflow-hidden rounded-md border border-white/15 bg-slate-900/90 p-2 transition-all duration-150 ease-out"
                 style={sizedStyle}
               >
                 <div
-                  className="h-full space-y-1 overflow-hidden text-xs leading-tight"
-                  style={{ fontFamily: '"Courier New", Courier, monospace' }}
+                  className="h-full overflow-auto rounded border border-white/10 bg-slate-950/90 p-2 text-white/80"
+                  style={{
+                    fontSize: `${resolvedLogFontSize}px`,
+                    lineHeight: logLineHeightMultiplier,
+                  }}
                 >
-                  {recentTagLog.length === 0 ? (
-                    <p className="text-muted-foreground">No tags yet.</p>
-                  ) : (
-                    recentTagLog.map((entry, entryIndex) => (
-                      <p key={`${entry}-${entryIndex}`} className="truncate">
-                        {entry}
-                      </p>
-                    ))
-                  )}
+                  <pre className="whitespace-pre-wrap break-words font-sans">
+                    {visibleLogEntries.length > 0
+                      ? visibleLogEntries.join("\n")
+                      : "Submit in preview to display input values."}
+                  </pre>
                 </div>
               </div>
             )
@@ -1065,27 +1543,45 @@ export default function ScoutPage() {
             )
           }
 
+          const hasStageBadge = Boolean(asset.stageParentTag)
+          const isSwapButton = asset.buttonKind === "swap"
+          const isSubmitButton = asset.buttonKind === "submit"
+          const isResetButton = asset.buttonKind === "reset"
+          const swapBorderClass = isSwapButton
+            ? isSwapped
+              ? "!border-2 !border-blue-400"
+              : "!border-2 !border-red-400"
+            : "border-white/20"
+          const buttonToneClass = isSubmitButton
+            ? "!bg-white !text-black hover:!bg-white/90"
+            : isResetButton
+              ? "!bg-[#9e4042] !text-white hover:!bg-[#9e4042]/90"
+              : "!bg-slate-900 !text-white hover:!bg-slate-900"
+
           return (
             <Button
               key={asset.id ?? `button-${index}`}
               type="button"
-              variant={
-                asset.buttonKind === "submit"
-                  ? "default"
-                  : asset.buttonKind === "reset"
-                    ? "destructive"
-                    : "outline"
-              }
-              className="absolute"
+              variant="outline"
+              className={cn(
+                "group absolute rounded-lg",
+                swapBorderClass,
+                buttonToneClass,
+                "transition-all duration-150 ease-out active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
+              )}
               style={sizedStyle}
               onClick={() => {
                 if (asset.buttonKind === "undo") {
-                  handleUndo()
+                  if (!isPreviewMode) {
+                    handleUndo()
+                  }
                   return
                 }
 
                 if (asset.buttonKind === "redo") {
-                  handleRedo()
+                  if (!isPreviewMode) {
+                    handleRedo()
+                  }
                   return
                 }
 
@@ -1102,6 +1598,19 @@ export default function ScoutPage() {
                   setRedoTagStack([])
                   setInputValuesByKey({})
                   setTeamValue(TEAM_DEFAULT_VALUE)
+                  setToggleValuesByKey(
+                    scoutAssets
+                      .filter((candidate): candidate is ToggleSwitchAsset => candidate.type === "toggle-switch")
+                      .reduce<Record<string, boolean>>((accumulator, candidate) => {
+                        const toggleKey =
+                          typeof candidate.tag === "string" && candidate.tag.trim().length > 0
+                            ? candidate.tag
+                            : candidate.id
+
+                        accumulator[toggleKey] = candidate.value
+                        return accumulator
+                      }, {})
+                  )
                 }
 
                 if (asset.buttonKind === "swap") {
@@ -1110,12 +1619,23 @@ export default function ScoutPage() {
               }}
             >
               {asset.buttonKind === "undo" ? (
-                <LucideIcons.Undo2 />
+                <span className="inline-flex items-center gap-1.5">
+                  <LucideIcons.Undo2 className="h-4 w-4" />
+                  <span>Undo</span>
+                </span>
               ) : asset.buttonKind === "redo" ? (
-                <LucideIcons.Redo2 />
+                <span className="inline-flex items-center gap-1.5">
+                  <LucideIcons.Redo2 className="h-4 w-4" />
+                  <span>Redo</span>
+                </span>
               ) : (
                 asset.text ?? "Button"
               )}
+              {hasStageBadge ? (
+                <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
+                  <LucideIcons.ChevronDown className="h-3 w-3" />
+                </span>
+              ) : null}
             </Button>
           )
         })}
