@@ -124,6 +124,8 @@ function LoginCard() {
         valid?: boolean;
         payload?: unknown;
         backgroundImage?: string | null;
+        eventKey?: string | null;
+        eventSchedule?: unknown;
       };
 
       if (!result.valid) {
@@ -136,6 +138,9 @@ function LoginCard() {
       localStorage.setItem("scouterName", trimmedScouterName);
       localStorage.setItem("payload", JSON.stringify(result.payload ?? null));
       localStorage.setItem("backgroundImage", result.backgroundImage ?? "");
+      localStorage.setItem("eventKey", result.eventKey ?? "");
+      localStorage.setItem("eventSchedule", JSON.stringify(result.eventSchedule ?? null));
+      localStorage.setItem("tbaEventMatchesSimple", JSON.stringify(result.eventSchedule ?? null));
 
       await preloadPayloadIcons(result.payload);
 
@@ -144,6 +149,17 @@ function LoginCard() {
       setIsSubmitting(false);
     }
   };
+
+  if (isSubmitting) {
+    return (
+      <div className="flex min-h-72 flex-col items-center justify-center gap-3 text-center">
+        <div className="text-lg font-semibold">Loading Event Data</div>
+        <p className="text-muted-foreground text-sm">
+          Fetching match schedule before opening scouting.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <Card className="w-full max-w-md">

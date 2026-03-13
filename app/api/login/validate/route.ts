@@ -12,6 +12,50 @@ type LoginRow = {
   background_image: string | null;
 };
 
+function parseEventKey(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+
+  const source = payload as {
+    eventKey?: unknown;
+    editorState?: {
+      eventKey?: unknown;
+    };
+  };
+
+  const candidates = [source.eventKey, source.editorState?.eventKey];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+
+    const normalized = candidate.trim();
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+async function fetchEventSchedule(eventKey: string): Promise<unknown | null> {
+  const authKey = process.env.X_TBA_AUTH_KEY?.trim();
+  if (!authKey) return null;
+
+  const response = await fetch(
+    `https://www.thebluealliance.com/api/v3/event/${encodeURIComponent(eventKey)}/matches/simple`,
+    {
+      headers: {
+        "X-TBA-Auth-Key": authKey,
+      },
+      cache: "no-store",
+    }
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return response.json();
+}
+
 function isSafeIdentifier(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -77,10 +121,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ valid: false }, { status: 200 });
     }
 
+    const eventKey = parseEventKey(record.payload);
+    let eventSchedule: unknown | null = null;
+
+    if (eventKey) {
+      try {
+        eventSchedule = await fetchEventSchedule(eventKey);
+      } catch {
+        eventSchedule = null;
+      }
+    }
+
     return NextResponse.json({
       valid: true,
       payload: record.payload,
       backgroundImage: record.background_image,
+      eventKey,
+      eventSchedule,
     });
   } catch {
     return NextResponse.json({ valid: false }, { status: 500 });

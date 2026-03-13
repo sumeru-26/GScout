@@ -15,8 +15,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 
@@ -185,6 +191,20 @@ function normalizeLogKind(value: unknown): value is "log" {
   return typeof value === "string" && value.toLowerCase() === "log"
 }
 
+function normalizeTeamSelectTag(value: unknown): value is "team-select" {
+  return typeof value === "string" && value.trim().toLowerCase() === "team-select"
+}
+
+function isTeamSelectAsset(item: Record<string, unknown>) {
+  return (
+    normalizeTeamSelectTag(item.kind) ||
+    normalizeTeamSelectTag(item.type) ||
+    normalizeTeamSelectTag(item.tag) ||
+    normalizeTeamSelectTag(item.key) ||
+    normalizeTeamSelectTag(item.name)
+  )
+}
+
 function stripModePrefix(tag: string) {
   return tag.replace(/^(auto|teleop)\./, "")
 }
@@ -202,6 +222,8 @@ function parseAssetTag(item: Record<string, unknown>) {
         ? item.inputTag
         : typeof item.input_tag === "string"
           ? item.input_tag
+          : typeof item.key === "string"
+            ? item.key
           : typeof item.name === "string"
             ? item.name
             : undefined
@@ -400,7 +422,8 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeLogKind(item.kind) ||
         normalizeLogKind(item.key) ||
         normalizeIconButtonKind(item.type) ||
-        normalizeIconButtonKind(item.kind)
+        normalizeIconButtonKind(item.kind) ||
+        isTeamSelectAsset(item)
     )
     .filter(
       (item) =>
@@ -423,6 +446,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeAutoToggleKind(item.kind) ||
         normalizeAutoToggleKind(item.key)
       const isLog = normalizeLogKind(item.type) || normalizeLogKind(item.kind) || normalizeLogKind(item.key)
+      const isTeamSelect = isTeamSelectAsset(item)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
       const actionButtonKind = normalizeActionButtonKind(item.type)
         ? item.type
@@ -502,8 +526,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
       return {
         id,
         type: "button",
-        buttonKind: isSwapButton ? "swap" : actionButtonKind ?? "button",
-        tag: parseAssetTag(item),
+        buttonKind: isTeamSelect ? "button" : isSwapButton ? "swap" : actionButtonKind ?? "button",
+        // Team-select assets can come through with an empty tag, so set a stable internal tag.
+        tag: isTeamSelect ? "team-select" : parseAssetTag(item),
         x: clampPositionScale(item.x as number),
         y: clampPositionScale(item.y as number),
         width: clampSizeScale(item.width as number),
@@ -523,6 +548,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
 }
 
 export default function ScoutPage() {
+  const TEAM_SELECT_TAG = "team-select"
+  const TEAM_DEFAULT_VALUE = "9999"
+
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [isNativeFullscreen, setIsNativeFullscreen] = useState(false)
   const [isFallbackFullscreen, setIsFallbackFullscreen] = useState(false)
@@ -541,6 +569,7 @@ export default function ScoutPage() {
   const [controlMode, setControlMode] = useState<ControlMode>("auto")
   const [autoTimerStartedAtMs, setAutoTimerStartedAtMs] = useState<number | null>(null)
   const [autoTimerRemainingMs, setAutoTimerRemainingMs] = useState<number>(AUTO_TIMER_DURATION_MS)
+  const [teamValue, setTeamValue] = useState<string>(TEAM_DEFAULT_VALUE)
   const { setHeaderActions } = useHeaderActions()
 
   useEffect(() => {
@@ -707,6 +736,7 @@ export default function ScoutPage() {
           )
           .map((asset) => asset.tag)
           .filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
+          .filter((tag) => tag !== TEAM_SELECT_TAG)
       ),
     ]
 
@@ -743,6 +773,7 @@ export default function ScoutPage() {
       output[tag] = inputValuesByKey[tag] ?? ""
     })
 
+    output.team = teamValue
     output.scouter = scouterName
 
     const payloadJson = JSON.stringify(output)
@@ -761,7 +792,7 @@ export default function ScoutPage() {
     setIsSubmitDialogOpen(true)
 
     console.log("[ScoutPage] submit payload:", output)
-  }, [inputValuesByKey, scoutAssets, scouterName, tagStack])
+  }, [TEAM_SELECT_TAG, inputValuesByKey, scoutAssets, scouterName, tagStack, teamValue])
 
   useEffect(() => {
     console.log("[ScoutPage] tagStack:", tagStack)
@@ -999,6 +1030,41 @@ export default function ScoutPage() {
             )
           }
 
+          if (asset.tag === TEAM_SELECT_TAG) {
+            return (
+              <div
+                key={asset.id ?? `team-select-${index}`}
+                className="absolute"
+                style={sizedStyle}
+              >
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={asset.buttonKind === "submit" ? "default" : "outline"}
+                      className="h-full w-full"
+                    >
+                      {asset.text ?? "Team"}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-56">
+                    <RadioGroup value={teamValue} onValueChange={setTeamValue}>
+                      {Array.from({ length: 6 }).map((_, optionIndex) => (
+                        <label
+                          key={`team-option-${optionIndex}`}
+                          className="hover:bg-accent hover:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5"
+                        >
+                          <RadioGroupItem value={TEAM_DEFAULT_VALUE} id={`team-option-${optionIndex}`} />
+                          <span className="text-sm">9999</span>
+                        </label>
+                      ))}
+                    </RadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            )
+          }
+
           return (
             <Button
               key={asset.id ?? `button-${index}`}
@@ -1035,6 +1101,7 @@ export default function ScoutPage() {
                   setTagStack([])
                   setRedoTagStack([])
                   setInputValuesByKey({})
+                  setTeamValue(TEAM_DEFAULT_VALUE)
                 }
 
                 if (asset.buttonKind === "swap") {
