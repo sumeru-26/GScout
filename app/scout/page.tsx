@@ -1477,6 +1477,7 @@ export default function ScoutPage() {
       output[tag] = toggleValuesByKey[tag] ?? false
     })
 
+    output.match = selectedMatchNumber ?? 0
     output.team = teamValue
     output.scouter = scouterName
 
@@ -1496,7 +1497,7 @@ export default function ScoutPage() {
     setIsSubmitDialogOpen(true)
 
     console.log("[ScoutPage] submit payload:", output)
-  }, [TEAM_SELECT_TAG, inputValuesByKey, scoutAssets, scouterName, tagStack, teamValue])
+  }, [TEAM_SELECT_TAG, inputValuesByKey, scoutAssets, scouterName, selectedMatchNumber, tagStack, teamValue])
 
   useEffect(() => {
     console.log("[ScoutPage] tagStack:", tagStack)
