@@ -2025,14 +2025,6 @@ export default function ScoutPage() {
                   setTeamValue(TEAM_DEFAULT_VALUE)
                   setEditingMatchKey(null)
                   setEditingMatchDraft("")
-                  setMatchValuesByKey(
-                    scoutAssets
-                      .filter((candidate): candidate is MatchSelectAsset => candidate.type === "match-select")
-                      .reduce<Record<string, number>>((accumulator, candidate) => {
-                        accumulator[candidate.id] = toNonNegativeWholeNumber(candidate.valueText) ?? 1
-                        return accumulator
-                      }, {})
-                  )
                   setToggleValuesByKey(
                     scoutAssets
                       .filter((candidate): candidate is ToggleSwitchAsset => candidate.type === "toggle-switch")
