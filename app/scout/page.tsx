@@ -20,7 +20,6 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Card } from "@/components/ui/card"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -1862,72 +1861,70 @@ export default function ScoutPage() {
                 <div className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2 px-1 text-center text-[11px] font-semibold text-white/85">
                   {asset.label ?? "Match Select"}
                 </div>
-                <Card className="h-full w-full overflow-hidden rounded-xl border-white/15 bg-slate-900/70 p-1 shadow-lg shadow-black/30">
-                  <div className="grid h-full min-h-0 grid-cols-3 gap-1 rounded-lg border border-white/10 bg-slate-950/60 p-1.5">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
-                      onClick={() => {
-                        setMatchValuesByKey((previous) => ({
-                          ...previous,
-                          [matchKey]: Math.max(0, currentMatchValue - 1),
-                        }))
+                <div className="grid h-full min-h-0 grid-cols-3 gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
+                    onClick={() => {
+                      setMatchValuesByKey((previous) => ({
+                        ...previous,
+                        [matchKey]: Math.max(0, currentMatchValue - 1),
+                      }))
+                    }}
+                  >
+                    {asset.decrementText ?? "-"}
+                  </Button>
+                  {isEditingThisMatch ? (
+                    <Input
+                      value={editingMatchDraft}
+                      onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                        const nextValue = event.target.value
+                        if (!/^\d*$/.test(nextValue)) return
+                        setEditingMatchDraft(nextValue)
                       }}
-                    >
-                      {asset.decrementText ?? "-"}
-                    </Button>
-                    {isEditingThisMatch ? (
-                      <Input
-                        value={editingMatchDraft}
-                        onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
-                          const nextValue = event.target.value
-                          if (!/^\d*$/.test(nextValue)) return
-                          setEditingMatchDraft(nextValue)
-                        }}
-                        onBlur={() => commitEditingMatchValue(matchKey)}
-                        onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault()
-                            commitEditingMatchValue(matchKey)
-                            return
-                          }
+                      onBlur={() => commitEditingMatchValue(matchKey)}
+                      onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault()
+                          commitEditingMatchValue(matchKey)
+                          return
+                        }
 
-                          if (event.key === "Escape") {
-                            event.preventDefault()
-                            cancelEditingMatchValue(matchKey)
-                          }
-                        }}
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        autoFocus
-                        className="h-full w-full rounded-md border-white/30 bg-slate-950 text-center text-base font-bold text-white"
-                      />
-                    ) : (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-full w-full rounded-md border-white/30 bg-slate-950 text-base font-bold text-white opacity-100"
-                        onClick={() => startEditingMatchValue(matchKey, currentMatchValue)}
-                      >
-                        {String(currentMatchValue)}
-                      </Button>
-                    )}
+                        if (event.key === "Escape") {
+                          event.preventDefault()
+                          cancelEditingMatchValue(matchKey)
+                        }
+                      }}
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoFocus
+                      className="h-full w-full rounded-md border-white/30 bg-slate-950 text-center text-base font-bold text-white"
+                    />
+                  ) : (
                     <Button
                       type="button"
                       variant="outline"
-                      className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
-                      onClick={() => {
-                        setMatchValuesByKey((previous) => ({
-                          ...previous,
-                          [matchKey]: currentMatchValue + 1,
-                        }))
-                      }}
+                      className="h-full w-full rounded-md border-white/30 bg-slate-950 text-base font-bold text-white opacity-100"
+                      onClick={() => startEditingMatchValue(matchKey, currentMatchValue)}
                     >
-                      {asset.incrementText ?? "+"}
+                      {String(currentMatchValue)}
                     </Button>
-                  </div>
-                </Card>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
+                    onClick={() => {
+                      setMatchValuesByKey((previous) => ({
+                        ...previous,
+                        [matchKey]: currentMatchValue + 1,
+                      }))
+                    }}
+                  >
+                    {asset.incrementText ?? "+"}
+                  </Button>
+                </div>
               </div>
             )
           }
