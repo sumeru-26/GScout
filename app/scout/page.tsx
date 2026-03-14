@@ -1162,6 +1162,8 @@ export default function ScoutPage() {
     })
   }, [isSwapped, mirrorLine, scoutAssets])
 
+  const isSwapMirrored = useMemo(() => isSwapped, [isSwapped])
+
   const coverAssets = useMemo(
     () => displayedAssets.filter((asset): asset is CoverAsset => asset.type === "cover"),
     [displayedAssets]
@@ -1497,7 +1499,16 @@ export default function ScoutPage() {
     setIsSubmitDialogOpen(true)
 
     console.log("[ScoutPage] submit payload:", output)
-  }, [TEAM_SELECT_TAG, inputValuesByKey, scoutAssets, scouterName, selectedMatchNumber, tagStack, teamValue])
+  }, [
+    TEAM_SELECT_TAG,
+    inputValuesByKey,
+    scoutAssets,
+    scouterName,
+    selectedMatchNumber,
+    tagStack,
+    teamValue,
+    toggleValuesByKey,
+  ])
 
   useEffect(() => {
     console.log("[ScoutPage] tagStack:", tagStack)
@@ -1693,6 +1704,10 @@ export default function ScoutPage() {
           }
 
           if (asset.type === "auto-toggle") {
+            const orderedModes: readonly ControlMode[] = isSwapMirrored
+              ? ["teleop", "auto"]
+              : ["auto", "teleop"]
+
             return (
               <ToggleGroup
                 key={asset.id ?? `auto-toggle-${index}`}
@@ -1702,18 +1717,15 @@ export default function ScoutPage() {
                 className="absolute grid h-full w-full grid-cols-2 gap-1 rounded-md border border-white/20 bg-slate-900/90 p-1 transition-all duration-150 ease-out"
                 style={sizedStyle}
               >
-                <ToggleGroupItem
-                  value="auto"
-                  className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
-                >
-                  {autoTimerLabel}
-                </ToggleGroupItem>
-                <ToggleGroupItem
-                  value="teleop"
-                  className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
-                >
-                  Teleop
-                </ToggleGroupItem>
+                {orderedModes.map((mode) => (
+                  <ToggleGroupItem
+                    key={`${asset.id ?? `auto-toggle-${index}`}-${mode}`}
+                    value={mode}
+                    className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+                  >
+                    {mode === "auto" ? autoTimerLabel : "Teleop"}
+                  </ToggleGroupItem>
+                ))}
               </ToggleGroup>
             )
           }
@@ -1747,6 +1759,7 @@ export default function ScoutPage() {
             const switchPixelWidth = 32 * switchScale
             const switchPixelHeight = 18 * switchScale
             const resolvedTextSize = Math.max(6, textSize * switchScale)
+            const toggleGap = Math.max(2, Math.round(8 * switchScale))
 
             return (
               <div
@@ -1754,14 +1767,23 @@ export default function ScoutPage() {
                 className="absolute flex items-center justify-center"
                 style={sizedStyle}
               >
-                <div className="flex h-full w-full items-center gap-2 overflow-visible">
+                <div
+                  className="flex h-full w-full items-center overflow-visible"
+                  style={{
+                    gap: toggleGap,
+                    transform: isSwapMirrored ? "scaleX(-1)" : undefined,
+                    transformOrigin: "center center",
+                  }}
+                >
                   <div
-                    className="flex flex-none items-center justify-start"
+                    className="flex flex-none items-center justify-center"
                     style={{
                       width: switchPixelWidth,
                       height: switchPixelHeight,
-                      transform: `scale(${switchScale})`,
-                      transformOrigin: "left center",
+                      transform: isSwapMirrored
+                        ? `scaleX(-1) scale(${switchScale})`
+                        : `scale(${switchScale})`,
+                      transformOrigin: "center center",
                     }}
                   >
                     <Switch
@@ -1782,7 +1804,11 @@ export default function ScoutPage() {
                     <Label
                       htmlFor={toggleId}
                       className={`shrink-0 whitespace-nowrap leading-none text-white/80 ${textClass}`}
-                      style={{ fontSize: resolvedTextSize }}
+                      style={{
+                        fontSize: resolvedTextSize,
+                        transform: isSwapMirrored ? "scaleX(-1)" : undefined,
+                        transformOrigin: "center center",
+                      }}
                     >
                       {asset.label}
                     </Label>
@@ -2025,14 +2051,6 @@ export default function ScoutPage() {
                   setTeamValue(TEAM_DEFAULT_VALUE)
                   setEditingMatchKey(null)
                   setEditingMatchDraft("")
-                  setMatchValuesByKey(
-                    scoutAssets
-                      .filter((candidate): candidate is MatchSelectAsset => candidate.type === "match-select")
-                      .reduce<Record<string, number>>((accumulator, candidate) => {
-                        accumulator[candidate.id] = toNonNegativeWholeNumber(candidate.valueText) ?? 1
-                        return accumulator
-                      }, {})
-                  )
                   setToggleValuesByKey(
                     scoutAssets
                       .filter((candidate): candidate is ToggleSwitchAsset => candidate.type === "toggle-switch")
