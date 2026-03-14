@@ -20,6 +20,7 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Card } from "@/components/ui/card"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -33,6 +34,7 @@ type ButtonAsset = {
   type: "button"
   buttonKind: "button" | "swap" | "undo" | "redo" | "submit" | "reset"
   tag?: string
+  increment?: number
   stageParentTag?: string
   x: number
   y: number
@@ -45,6 +47,7 @@ type IconButtonAsset = {
   id: string
   type: "icon-button"
   tag?: string
+  increment?: number
   stageParentTag?: string
   x: number
   y: number
@@ -99,6 +102,19 @@ type ToggleSwitchAsset = {
   textSize?: number
 }
 
+type MatchSelectAsset = {
+  id: string
+  type: "match-select"
+  x: number
+  y: number
+  width: number
+  height: number
+  label?: string
+  valueText?: string
+  decrementText?: string
+  incrementText?: string
+}
+
 type LogAsset = {
   id: string
   type: "log"
@@ -106,6 +122,25 @@ type LogAsset = {
   y: number
   width: number
   height: number
+}
+
+type TbaSimpleMatch = {
+  key: string
+  compLevel: string
+  matchNumber: number
+  blueTeamKeys: string[]
+  redTeamKeys: string[]
+}
+
+type TeamSelectOption = {
+  value: string
+  label: string
+  colorClassName: string
+}
+
+type TagStackAction = {
+  tag: string
+  count: number
 }
 
 type MirrorLine = {
@@ -134,6 +169,7 @@ type ScoutAsset =
   | InputAsset
   | AutoToggleAsset
   | ToggleSwitchAsset
+  | MatchSelectAsset
   | LogAsset
 
 type ControlMode = "auto" | "teleop"
@@ -283,6 +319,24 @@ function toBoolean(value: unknown): boolean | null {
   return null
 }
 
+function toNonNegativeWholeNumber(value: unknown): number | null {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) return null
+    return value
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim()
+    if (!/^\d+$/.test(normalized)) return null
+
+    const parsed = Number(normalized)
+    if (!Number.isSafeInteger(parsed) || parsed < 0) return null
+    return parsed
+  }
+
+  return null
+}
+
 function looksLikeToggleSwitch(item: Record<string, unknown>) {
   if (
     toFiniteNumber(item.x) === null ||
@@ -301,6 +355,88 @@ function looksLikeToggleSwitch(item: Record<string, unknown>) {
 
 function normalizeLogKind(value: unknown): value is "log" {
   return typeof value === "string" && value.toLowerCase() === "log"
+}
+
+function normalizeTeamKey(value: unknown): string | null {
+  if (typeof value !== "string") return null
+
+  const normalized = value.trim().toLowerCase()
+  if (!/^frc\d+$/.test(normalized)) return null
+  return normalized
+}
+
+function teamKeyToTeamNumber(teamKey: string): string {
+  const parsed = /^frc(\d+)$/.exec(teamKey)
+  return parsed?.[1] ?? teamKey
+}
+
+function normalizeTeamKeyList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .map((candidate) => normalizeTeamKey(candidate))
+    .filter((candidate): candidate is string => candidate !== null)
+}
+
+function normalizeEventScheduleMatches(source: unknown): TbaSimpleMatch[] {
+  const candidateMatches =
+    Array.isArray(source)
+      ? source
+      : source && typeof source === "object" && Array.isArray((source as { matches?: unknown }).matches)
+        ? (source as { matches: unknown[] }).matches
+        : []
+
+  return candidateMatches
+    .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate && typeof candidate === "object"))
+    .map((candidate, index) => {
+      const key =
+        typeof candidate.key === "string" && candidate.key.trim().length > 0
+          ? candidate.key.trim()
+          : `match-${index}`
+
+      const compLevel =
+        typeof candidate.comp_level === "string"
+          ? candidate.comp_level.trim().toLowerCase()
+          : typeof candidate.compLevel === "string"
+            ? candidate.compLevel.trim().toLowerCase()
+            : ""
+
+      const matchNumber =
+        toNonNegativeWholeNumber(candidate.match_number) ??
+        toNonNegativeWholeNumber(candidate.matchNumber) ??
+        -1
+
+      const alliances =
+        candidate.alliances && typeof candidate.alliances === "object"
+          ? (candidate.alliances as {
+              blue?: { team_keys?: unknown; teamKeys?: unknown }
+              red?: { team_keys?: unknown; teamKeys?: unknown }
+            })
+          : undefined
+
+      const blueTeamKeys = normalizeTeamKeyList(
+        alliances?.blue?.team_keys ?? alliances?.blue?.teamKeys
+      )
+      const redTeamKeys = normalizeTeamKeyList(
+        alliances?.red?.team_keys ?? alliances?.red?.teamKeys
+      )
+
+      return {
+        key,
+        compLevel,
+        matchNumber,
+        blueTeamKeys,
+        redTeamKeys,
+      } satisfies TbaSimpleMatch
+    })
+    .filter((match) => match.matchNumber >= 0)
+}
+
+function normalizeMatchSelectKind(value: unknown): value is "match-select" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.trim().toLowerCase()
+  return normalized === "match-select" || normalized === "matchselect" || normalized === "match_select"
 }
 
 function normalizeTeamSelectTag(value: unknown): value is "team-select" {
@@ -603,6 +739,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeLogKind(item.type) ||
         normalizeLogKind(item.kind) ||
         normalizeLogKind(item.key) ||
+        normalizeMatchSelectKind(item.type) ||
+        normalizeMatchSelectKind(item.kind) ||
+        normalizeMatchSelectKind(item.key) ||
         normalizeIconButtonKind(item.type) ||
         normalizeIconButtonKind(item.kind) ||
         isTeamSelectAsset(item)
@@ -632,7 +771,12 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeToggleSwitchKind(item.kind) ||
         normalizeToggleSwitchKind(item.key) ||
         looksLikeToggleSwitch(item)
+      const parsedIncrement = toNonNegativeWholeNumber(item.increment)
       const isLog = normalizeLogKind(item.type) || normalizeLogKind(item.kind) || normalizeLogKind(item.key)
+      const isMatchSelect =
+        normalizeMatchSelectKind(item.type) ||
+        normalizeMatchSelectKind(item.kind) ||
+        normalizeMatchSelectKind(item.key)
       const isTeamSelect = isTeamSelectAsset(item)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
       const actionButtonKind = normalizeActionButtonKind(item.type)
@@ -732,11 +876,46 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         } satisfies LogAsset
       }
 
+      if (isMatchSelect) {
+        const parsedMatchValue =
+          toNonNegativeWholeNumber(item.valueText) ??
+          toNonNegativeWholeNumber(item.value) ??
+          toNonNegativeWholeNumber(item.matchNumber) ??
+          toNonNegativeWholeNumber(item.match) ??
+          toNonNegativeWholeNumber(item.number) ??
+          1
+
+        return {
+          id,
+          type: "match-select",
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label.trim()
+              : typeof item.text === "string" && item.text.trim().length > 0
+                ? item.text.trim()
+                : "Match Select",
+          valueText: String(parsedMatchValue),
+          decrementText:
+            typeof item.decrementText === "string" && item.decrementText.trim().length > 0
+              ? item.decrementText.trim()
+              : "-",
+          incrementText:
+            typeof item.incrementText === "string" && item.incrementText.trim().length > 0
+              ? item.incrementText.trim()
+              : "+",
+        } satisfies MatchSelectAsset
+      }
+
       if (isIconButton) {
         return {
           id,
           type: "icon-button",
           tag: parseAssetTag(item),
+          increment: parsedIncrement ?? undefined,
           stageParentTag:
             typeof item.stageParentTag === "string" && item.stageParentTag.trim().length > 0
               ? item.stageParentTag
@@ -766,6 +945,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         buttonKind: isTeamSelect ? "button" : isSwapButton ? "swap" : actionButtonKind ?? "button",
         // Team-select assets can come through with an empty tag, so set a stable internal tag.
         tag: isTeamSelect ? "team-select" : parseAssetTag(item),
+        increment: parsedIncrement ?? undefined,
         x: clampPositionScale(item.x as number),
         y: clampPositionScale(item.y as number),
         width: clampSizeScale(item.width as number),
@@ -786,7 +966,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
 
 export default function ScoutPage() {
   const TEAM_SELECT_TAG = "team-select"
-  const TEAM_DEFAULT_VALUE = "9999"
+  const TEAM_DEFAULT_VALUE = ""
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [isNativeFullscreen, setIsNativeFullscreen] = useState(false)
@@ -800,8 +980,13 @@ export default function ScoutPage() {
   const [mirrorLine, setMirrorLine] = useState<MirrorLine | null>(null)
   const [tagStack, setTagStack] = useState<string[]>([])
   const [redoTagStack, setRedoTagStack] = useState<string[]>([])
+  const [tagStackActions, setTagStackActions] = useState<TagStackAction[]>([])
+  const [redoTagStackActions, setRedoTagStackActions] = useState<TagStackAction[]>([])
   const [inputValuesByKey, setInputValuesByKey] = useState<Record<string, string>>({})
   const [toggleValuesByKey, setToggleValuesByKey] = useState<Record<string, boolean>>({})
+  const [matchValuesByKey, setMatchValuesByKey] = useState<Record<string, number>>({})
+  const [editingMatchKey, setEditingMatchKey] = useState<string | null>(null)
+  const [editingMatchDraft, setEditingMatchDraft] = useState<string>("")
   const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
@@ -810,6 +995,7 @@ export default function ScoutPage() {
   const [autoTimerStartedAtMs, setAutoTimerStartedAtMs] = useState<number | null>(null)
   const [autoTimerRemainingMs, setAutoTimerRemainingMs] = useState<number>(AUTO_TIMER_DURATION_MS)
   const [teamValue, setTeamValue] = useState<string>(TEAM_DEFAULT_VALUE)
+  const [eventScheduleMatches, setEventScheduleMatches] = useState<TbaSimpleMatch[]>([])
   const isPreviewMode = true
   const { setHeaderActions } = useHeaderActions()
 
@@ -819,6 +1005,18 @@ export default function ScoutPage() {
 
     const storedBackgroundImage = localStorage.getItem("backgroundImage")
     setBackgroundImage(storedBackgroundImage || null)
+
+    const storedEventSchedule = localStorage.getItem("eventSchedule")
+    if (!storedEventSchedule) {
+      setEventScheduleMatches([])
+    } else {
+      try {
+        const parsedSchedule = JSON.parse(storedEventSchedule) as unknown
+        setEventScheduleMatches(normalizeEventScheduleMatches(parsedSchedule))
+      } catch {
+        setEventScheduleMatches([])
+      }
+    }
 
     const storedPayload = localStorage.getItem("payload")
     if (!storedPayload) {
@@ -970,10 +1168,69 @@ export default function ScoutPage() {
     [displayedAssets]
   )
 
+  const primaryMatchSelectAsset = useMemo(
+    () => scoutAssets.find((asset): asset is MatchSelectAsset => asset.type === "match-select") ?? null,
+    [scoutAssets]
+  )
+
+  const selectedMatchNumber = useMemo(() => {
+    if (!primaryMatchSelectAsset) return null
+
+    const liveValue = matchValuesByKey[primaryMatchSelectAsset.id]
+    if (typeof liveValue === "number" && Number.isInteger(liveValue) && liveValue >= 0) {
+      return liveValue
+    }
+
+    return toNonNegativeWholeNumber(primaryMatchSelectAsset.valueText)
+  }, [matchValuesByKey, primaryMatchSelectAsset])
+
+  const selectedScheduleMatch = useMemo(() => {
+    if (selectedMatchNumber === null) return null
+
+    const sameNumberMatches = eventScheduleMatches.filter(
+      (match) => match.matchNumber === selectedMatchNumber
+    )
+
+    if (sameNumberMatches.length === 0) return null
+    return sameNumberMatches.find((match) => match.compLevel === "qm") ?? sameNumberMatches[0]
+  }, [eventScheduleMatches, selectedMatchNumber])
+
+  const teamSelectOptions = useMemo<TeamSelectOption[]>(() => {
+    if (!selectedScheduleMatch) return []
+
+    const blueOptions = selectedScheduleMatch.blueTeamKeys.map((teamKey, index) => {
+      const teamNumber = teamKeyToTeamNumber(teamKey)
+      return {
+        value: teamNumber,
+        label: `B${index + 1}: ${teamNumber}`,
+        colorClassName: "text-sky-300",
+      } satisfies TeamSelectOption
+    })
+
+    const redOptions = selectedScheduleMatch.redTeamKeys.map((teamKey, index) => {
+      const teamNumber = teamKeyToTeamNumber(teamKey)
+      return {
+        value: teamNumber,
+        label: `R${index + 1}: ${teamNumber}`,
+        colorClassName: "text-red-300",
+      } satisfies TeamSelectOption
+    })
+
+    return [...blueOptions, ...redOptions]
+  }, [selectedScheduleMatch])
+
+  useEffect(() => {
+    if (!teamValue) return
+
+    if (!teamSelectOptions.some((option) => option.value === teamValue)) {
+      setTeamValue(TEAM_DEFAULT_VALUE)
+    }
+  }, [TEAM_DEFAULT_VALUE, teamSelectOptions, teamValue])
+
   const buttonAssets = useMemo(
     () =>
       displayedAssets.filter(
-        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset | AutoToggleAsset | ToggleSwitchAsset | LogAsset =>
+        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset | AutoToggleAsset | ToggleSwitchAsset | MatchSelectAsset | LogAsset =>
           asset.type !== "cover"
       ),
     [displayedAssets]
@@ -994,6 +1251,47 @@ export default function ScoutPage() {
 
     setToggleValuesByKey(initialToggleValues)
   }, [scoutAssets])
+
+  useEffect(() => {
+    const initialMatchValues = scoutAssets
+      .filter((asset): asset is MatchSelectAsset => asset.type === "match-select")
+      .reduce<Record<string, number>>((accumulator, asset) => {
+        const matchKey = asset.id
+        accumulator[matchKey] = toNonNegativeWholeNumber(asset.valueText) ?? 1
+        return accumulator
+      }, {})
+
+    setMatchValuesByKey(initialMatchValues)
+    setEditingMatchKey(null)
+    setEditingMatchDraft("")
+  }, [scoutAssets])
+
+  const startEditingMatchValue = useCallback((matchKey: string, currentValue: number) => {
+    setEditingMatchKey(matchKey)
+    setEditingMatchDraft(String(currentValue))
+  }, [])
+
+  const commitEditingMatchValue = useCallback(
+    (matchKey: string) => {
+      const parsed = toNonNegativeWholeNumber(editingMatchDraft)
+
+      if (parsed !== null) {
+        setMatchValuesByKey((previous) => ({
+          ...previous,
+          [matchKey]: parsed,
+        }))
+      }
+
+      setEditingMatchKey((previous) => (previous === matchKey ? null : previous))
+      setEditingMatchDraft("")
+    },
+    [editingMatchDraft]
+  )
+
+  const cancelEditingMatchValue = useCallback((matchKey: string) => {
+    setEditingMatchKey((previous) => (previous === matchKey ? null : previous))
+    setEditingMatchDraft("")
+  }, [])
 
   const setTeleopMode = useCallback(() => {
     setControlMode("teleop")
@@ -1019,13 +1317,14 @@ export default function ScoutPage() {
 
   const handleAutoToggleGroupChange = useCallback(
     (nextValue: string) => {
-      if (nextValue === "auto") {
-        setAutoMode(true)
+      if (nextValue === "teleop") {
+        setTeleopMode()
         return
       }
 
-      if (nextValue === "teleop") {
-        setTeleopMode()
+      if (nextValue === "auto") {
+        // Selecting Auto explicitly should switch modes without re-starting the timer.
+        setAutoMode(false)
         return
       }
 
@@ -1066,30 +1365,53 @@ export default function ScoutPage() {
     setIsSwapped((previous) => !previous)
   }, [mirrorLine])
 
-  const pushTagToStack = useCallback((tag?: string) => {
+  const pushTagToStack = useCallback((tag?: string, increment = 1) => {
     if (!tag || tag.trim().length === 0) return
+    const repeatCount = Math.max(0, Math.floor(increment))
+    if (repeatCount === 0) return
 
     const prefixedTag = toModePrefixedTag(tag, controlMode)
 
-    setTagStack((previous) => [...previous, prefixedTag])
+    setTagStack((previous) => [
+      ...previous,
+      ...Array.from({ length: repeatCount }, () => prefixedTag),
+    ])
+    setTagStackActions((previous) => [
+      ...previous,
+      {
+        tag: prefixedTag,
+        count: repeatCount,
+      },
+    ])
     setRedoTagStack([])
+    setRedoTagStackActions([])
   }, [controlMode])
 
   const handleUndo = useCallback(() => {
-    if (tagStack.length === 0) return
+    const lastAction = tagStackActions[tagStackActions.length - 1]
+    if (!lastAction) return
 
-    const popped = tagStack[tagStack.length - 1]
-    setTagStack((previous) => previous.slice(0, -1))
-    setRedoTagStack((previous) => [...previous, popped])
-  }, [tagStack])
+    setTagStack((previous) => previous.slice(0, Math.max(0, previous.length - lastAction.count)))
+    setTagStackActions((previous) => previous.slice(0, -1))
+    setRedoTagStack((previous) => [
+      ...previous,
+      ...Array.from({ length: lastAction.count }, () => lastAction.tag),
+    ])
+    setRedoTagStackActions((previous) => [...previous, lastAction])
+  }, [tagStackActions])
 
   const handleRedo = useCallback(() => {
-    if (redoTagStack.length === 0) return
+    const lastRedoAction = redoTagStackActions[redoTagStackActions.length - 1]
+    if (!lastRedoAction) return
 
-    const popped = redoTagStack[redoTagStack.length - 1]
-    setRedoTagStack((previous) => previous.slice(0, -1))
-    setTagStack((previous) => [...previous, popped])
-  }, [redoTagStack])
+    setRedoTagStack((previous) => previous.slice(0, Math.max(0, previous.length - lastRedoAction.count)))
+    setRedoTagStackActions((previous) => previous.slice(0, -1))
+    setTagStack((previous) => [
+      ...previous,
+      ...Array.from({ length: lastRedoAction.count }, () => lastRedoAction.tag),
+    ])
+    setTagStackActions((previous) => [...previous, lastRedoAction])
+  }, [redoTagStackActions])
 
   const handleSubmit = useCallback(async () => {
     const output: Record<string, number | string | boolean> = {}
@@ -1180,7 +1502,9 @@ export default function ScoutPage() {
   useEffect(() => {
     console.log("[ScoutPage] tagStack:", tagStack)
     console.log("[ScoutPage] redoTagStack:", redoTagStack)
-  }, [tagStack, redoTagStack])
+    console.log("[ScoutPage] tagStackActions:", tagStackActions)
+    console.log("[ScoutPage] redoTagStackActions:", redoTagStackActions)
+  }, [redoTagStack, redoTagStackActions, tagStack, tagStackActions])
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -1320,7 +1644,7 @@ export default function ScoutPage() {
                 variant="outline"
                 className="absolute rounded-lg border border-white/20 bg-slate-900 p-0 text-white hover:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
                 style={sizedStyle}
-                onClick={() => pushTagToStack(asset.tag)}
+                onClick={() => pushTagToStack(asset.tag, asset.increment ?? 1)}
               >
                 <Icon
                   className="h-5 w-5"
@@ -1484,7 +1808,22 @@ export default function ScoutPage() {
               1,
               Math.floor(estimatedAvailableHeight / (resolvedLogFontSize * logLineHeightMultiplier))
             )
-            const visibleLogEntries = [...tagStack].slice(-visibleLineCount).reverse()
+            const tagCounts = new Map<string, number>()
+            const orderedTagsByMostRecent: string[] = []
+
+            for (let index = tagStack.length - 1; index >= 0; index -= 1) {
+              const stackTag = tagStack[index]
+              const previousCount = tagCounts.get(stackTag) ?? 0
+              tagCounts.set(stackTag, previousCount + 1)
+
+              if (previousCount === 0) {
+                orderedTagsByMostRecent.push(stackTag)
+              }
+            }
+
+            const visibleLogEntries = orderedTagsByMostRecent
+              .slice(0, visibleLineCount)
+              .map((stackTag) => `${stackTag}: ${tagCounts.get(stackTag) ?? 0}`)
 
             return (
               <div
@@ -1502,9 +1841,93 @@ export default function ScoutPage() {
                   <pre className="whitespace-pre-wrap break-words font-sans">
                     {visibleLogEntries.length > 0
                       ? visibleLogEntries.join("\n")
-                      : "Submit in preview to display input values."}
+                      : "No tags logged yet."}
                   </pre>
                 </div>
+              </div>
+            )
+          }
+
+          if (asset.type === "match-select") {
+            const matchKey = asset.id
+            const currentMatchValue = matchValuesByKey[matchKey] ?? toNonNegativeWholeNumber(asset.valueText) ?? 1
+            const isEditingThisMatch = editingMatchKey === matchKey
+
+            return (
+              <div
+                key={asset.id ?? `match-select-${index}`}
+                className="absolute"
+                style={sizedStyle}
+              >
+                <div className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2 px-1 text-center text-[11px] font-semibold text-white/85">
+                  {asset.label ?? "Match Select"}
+                </div>
+                <Card className="h-full w-full overflow-hidden rounded-xl border-white/15 bg-slate-900/70 p-1 shadow-lg shadow-black/30">
+                  <div className="grid h-full min-h-0 grid-cols-3 gap-1 rounded-lg border border-white/10 bg-slate-950/60 p-1.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
+                      onClick={() => {
+                        setMatchValuesByKey((previous) => ({
+                          ...previous,
+                          [matchKey]: Math.max(0, currentMatchValue - 1),
+                        }))
+                      }}
+                    >
+                      {asset.decrementText ?? "-"}
+                    </Button>
+                    {isEditingThisMatch ? (
+                      <Input
+                        value={editingMatchDraft}
+                        onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                          const nextValue = event.target.value
+                          if (!/^\d*$/.test(nextValue)) return
+                          setEditingMatchDraft(nextValue)
+                        }}
+                        onBlur={() => commitEditingMatchValue(matchKey)}
+                        onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault()
+                            commitEditingMatchValue(matchKey)
+                            return
+                          }
+
+                          if (event.key === "Escape") {
+                            event.preventDefault()
+                            cancelEditingMatchValue(matchKey)
+                          }
+                        }}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        autoFocus
+                        className="h-full w-full rounded-md border-white/30 bg-slate-950 text-center text-base font-bold text-white"
+                      />
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-full w-full rounded-md border-white/30 bg-slate-950 text-base font-bold text-white opacity-100"
+                        onClick={() => startEditingMatchValue(matchKey, currentMatchValue)}
+                      >
+                        {String(currentMatchValue)}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
+                      onClick={() => {
+                        setMatchValuesByKey((previous) => ({
+                          ...previous,
+                          [matchKey]: currentMatchValue + 1,
+                        }))
+                      }}
+                    >
+                      {asset.incrementText ?? "+"}
+                    </Button>
+                  </div>
+                </Card>
               </div>
             )
           }
@@ -1523,20 +1946,25 @@ export default function ScoutPage() {
                       variant={asset.buttonKind === "submit" ? "default" : "outline"}
                       className="h-full w-full"
                     >
-                      {asset.text ?? "Team"}
+                      {teamValue.trim().length > 0 ? teamValue : "Select Team"}
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start" className="w-56">
                     <RadioGroup value={teamValue} onValueChange={setTeamValue}>
-                      {Array.from({ length: 6 }).map((_, optionIndex) => (
+                      {teamSelectOptions.map((option, optionIndex) => (
                         <label
-                          key={`team-option-${optionIndex}`}
+                          key={`team-option-${option.value}-${optionIndex}`}
                           className="hover:bg-accent hover:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5"
                         >
-                          <RadioGroupItem value={TEAM_DEFAULT_VALUE} id={`team-option-${optionIndex}`} />
-                          <span className="text-sm">9999</span>
+                          <RadioGroupItem value={option.value} id={`team-option-${optionIndex}`} />
+                          <span className={`text-sm font-medium ${option.colorClassName}`}>{option.label}</span>
                         </label>
                       ))}
+                      {teamSelectOptions.length === 0 ? (
+                        <div className="text-muted-foreground px-2 py-1.5 text-sm">
+                          No teams found for this match.
+                        </div>
+                      ) : null}
                     </RadioGroup>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -1573,21 +2001,17 @@ export default function ScoutPage() {
               style={sizedStyle}
               onClick={() => {
                 if (asset.buttonKind === "undo") {
-                  if (!isPreviewMode) {
-                    handleUndo()
-                  }
+                  handleUndo()
                   return
                 }
 
                 if (asset.buttonKind === "redo") {
-                  if (!isPreviewMode) {
-                    handleRedo()
-                  }
+                  handleRedo()
                   return
                 }
 
                 if (asset.buttonKind !== "submit" && asset.buttonKind !== "reset") {
-                  pushTagToStack(asset.tag)
+                  pushTagToStack(asset.tag, asset.increment ?? 1)
                 }
 
                 if (asset.buttonKind === "submit") {
@@ -1597,8 +2021,20 @@ export default function ScoutPage() {
                 if (asset.buttonKind === "reset") {
                   setTagStack([])
                   setRedoTagStack([])
+                  setTagStackActions([])
+                  setRedoTagStackActions([])
                   setInputValuesByKey({})
                   setTeamValue(TEAM_DEFAULT_VALUE)
+                  setEditingMatchKey(null)
+                  setEditingMatchDraft("")
+                  setMatchValuesByKey(
+                    scoutAssets
+                      .filter((candidate): candidate is MatchSelectAsset => candidate.type === "match-select")
+                      .reduce<Record<string, number>>((accumulator, candidate) => {
+                        accumulator[candidate.id] = toNonNegativeWholeNumber(candidate.valueText) ?? 1
+                        return accumulator
+                      }, {})
+                  )
                   setToggleValuesByKey(
                     scoutAssets
                       .filter((candidate): candidate is ToggleSwitchAsset => candidate.type === "toggle-switch")

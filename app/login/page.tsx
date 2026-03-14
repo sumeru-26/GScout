@@ -135,6 +135,11 @@ function LoginCard() {
         return;
       }
 
+      console.log("[LoginPage] TBA event schedule from login response:", {
+        eventKey: result.eventKey ?? null,
+        eventSchedule: result.eventSchedule ?? null,
+      });
+
       localStorage.setItem("loggedIn", "true");
       localStorage.setItem("loginCode", trimmedLoginCode);
       localStorage.setItem("scouterName", trimmedScouterName);

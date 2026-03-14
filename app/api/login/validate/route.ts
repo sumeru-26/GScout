@@ -36,8 +36,15 @@ function parseEventKey(payload: unknown): string | null {
 }
 
 async function fetchEventSchedule(eventKey: string): Promise<unknown | null> {
-  const authKey = process.env.X_TBA_AUTH_KEY?.trim();
-  if (!authKey) return null;
+  const authKey =
+    process.env.X_TBA_AUTH_KEY?.trim() ||
+    process.env.TBA_AUTH_KEY?.trim() ||
+    process.env["X-TBA-Auth-Key"]?.trim();
+
+  if (!authKey) {
+    console.warn("[login/validate] Missing The Blue Alliance auth key. Set X_TBA_AUTH_KEY in .env.");
+    return null;
+  }
 
   const response = await fetch(
     `https://www.thebluealliance.com/api/v3/event/${encodeURIComponent(eventKey)}/matches/simple`,
@@ -50,6 +57,13 @@ async function fetchEventSchedule(eventKey: string): Promise<unknown | null> {
   );
 
   if (!response.ok) {
+    const responseBody = await response.text().catch(() => "");
+    console.warn("[login/validate] TBA request failed", {
+      eventKey,
+      status: response.status,
+      statusText: response.statusText,
+      responseBody,
+    });
     return null;
   }
 
@@ -127,6 +141,10 @@ export async function POST(request: Request) {
     if (eventKey) {
       try {
         eventSchedule = await fetchEventSchedule(eventKey);
+        console.log("[login/validate] TBA event schedule response:", {
+          eventKey,
+          eventSchedule,
+        });
       } catch {
         eventSchedule = null;
       }
