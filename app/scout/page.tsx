@@ -810,6 +810,7 @@ export default function ScoutPage() {
   const [autoTimerStartedAtMs, setAutoTimerStartedAtMs] = useState<number | null>(null)
   const [autoTimerRemainingMs, setAutoTimerRemainingMs] = useState<number>(AUTO_TIMER_DURATION_MS)
   const [teamValue, setTeamValue] = useState<string>(TEAM_DEFAULT_VALUE)
+  const isPreviewMode = true
   const { setHeaderActions } = useHeaderActions()
 
   useEffect(() => {
