@@ -34,7 +34,12 @@ type ButtonAsset = {
   buttonKind: "button" | "swap" | "undo" | "redo" | "submit" | "reset"
   tag?: string
   increment?: number
+  buttonPressMode?: "tap" | "hold"
+  stageParentId?: string
   stageParentTag?: string
+  stageHideAfterSelection?: boolean
+  stageBlurBackgroundOnClick?: boolean
+  stageHideOtherElementsInStage?: boolean
   x: number
   y: number
   width: number
@@ -47,7 +52,12 @@ type IconButtonAsset = {
   type: "icon-button"
   tag?: string
   increment?: number
+  buttonPressMode?: "tap" | "hold"
+  stageParentId?: string
   stageParentTag?: string
+  stageHideAfterSelection?: boolean
+  stageBlurBackgroundOnClick?: boolean
+  stageHideOtherElementsInStage?: boolean
   x: number
   y: number
   width: number
@@ -60,6 +70,7 @@ type IconButtonAsset = {
 type CoverAsset = {
   id: string
   type: "cover"
+  stageParentId?: string
   x: number
   y: number
   width: number
@@ -70,6 +81,7 @@ type InputAsset = {
   id: string
   type: "input"
   tag?: string
+  stageParentId?: string
   x: number
   y: number
   width: number
@@ -81,16 +93,20 @@ type InputAsset = {
 type AutoToggleAsset = {
   id: string
   type: "auto-toggle"
+  stageParentId?: string
   x: number
   y: number
   width: number
   height: number
+  mode?: "auto" | "teleop"
+  durationSeconds?: number
 }
 
 type ToggleSwitchAsset = {
   id: string
   type: "toggle-switch"
   tag?: string
+  stageParentId?: string
   x: number
   y: number
   width: number
@@ -104,6 +120,7 @@ type ToggleSwitchAsset = {
 type MatchSelectAsset = {
   id: string
   type: "match-select"
+  stageParentId?: string
   x: number
   y: number
   width: number
@@ -117,10 +134,68 @@ type MatchSelectAsset = {
 type LogAsset = {
   id: string
   type: "log"
+  stageParentId?: string
   x: number
   y: number
   width: number
   height: number
+}
+
+type StartPositionAsset = {
+  id: string
+  type: "start-position"
+  tag?: string
+  stageParentId?: string
+  x: number
+  y: number
+  width: number
+  height: number
+  label?: string
+  startPositionVisible: boolean
+}
+
+type MovementAsset = {
+  id: string
+  type: "movement"
+  tag?: string
+  stageParentId?: string
+  stageHideAfterSelection?: boolean
+  stageBlurBackgroundOnClick?: boolean
+  stageHideOtherElementsInStage?: boolean
+  x: number
+  y: number
+  width: number
+  height: number
+  label?: string
+  movementDirection: "left" | "right"
+}
+
+type RuntimeActionEvent = {
+  type: string
+  atMs: number
+  assetId?: string
+  key?: string
+  value?: string | number | boolean
+  valueDelta?: number
+  durationMs?: number
+  zone?: string
+  action?: "entered" | "exited" | "crossed"
+  xRatio?: number
+  yRatio?: number
+}
+
+type HoldSegment = {
+  startMs: number
+  endMs: number
+  durationMs: number
+}
+
+type HoldStats = {
+  assetId: string
+  mode: "hold"
+  totalMs: number
+  pressCount: number
+  segments: HoldSegment[]
 }
 
 type TbaSimpleMatch = {
@@ -169,6 +244,8 @@ type ScoutAsset =
   | AutoToggleAsset
   | ToggleSwitchAsset
   | MatchSelectAsset
+  | StartPositionAsset
+  | MovementAsset
   | LogAsset
 
 type ControlMode = "auto" | "teleop"
@@ -306,6 +383,43 @@ function normalizeToggleSwitchKind(value: unknown): value is "toggle-switch" {
     normalized === "toggle_switch" ||
     normalized === "toggle"
   )
+}
+
+function normalizeStartPositionKind(value: unknown): value is "start-position" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return (
+    normalized === "start-position" ||
+    normalized === "startposition" ||
+    normalized === "start_position"
+  )
+}
+
+function normalizeMovementKind(value: unknown): value is "movement" {
+  return typeof value === "string" && value.toLowerCase() === "movement"
+}
+
+function normalizePressMode(value: unknown): "tap" | "hold" {
+  return value === "hold" ? "hold" : "tap"
+}
+
+function normalizeMovementDirection(value: unknown): "left" | "right" {
+  if (typeof value !== "string") return "left"
+  return value.trim().toLowerCase() === "right" ? "right" : "left"
+}
+
+function parseStageParentId(item: Record<string, unknown>): string | undefined {
+  if (typeof item.stageParentId === "string" && item.stageParentId.trim().length > 0) {
+    return item.stageParentId.trim()
+  }
+
+  return undefined
+}
+
+function parseStageFlag(value: unknown, fallback = false) {
+  const parsed = toBoolean(value)
+  return parsed ?? fallback
 }
 
 function toBoolean(value: unknown): boolean | null {
@@ -741,6 +855,12 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeMatchSelectKind(item.type) ||
         normalizeMatchSelectKind(item.kind) ||
         normalizeMatchSelectKind(item.key) ||
+        normalizeStartPositionKind(item.type) ||
+        normalizeStartPositionKind(item.kind) ||
+        normalizeStartPositionKind(item.key) ||
+        normalizeMovementKind(item.type) ||
+        normalizeMovementKind(item.kind) ||
+        normalizeMovementKind(item.key) ||
         normalizeIconButtonKind(item.type) ||
         normalizeIconButtonKind(item.kind) ||
         isTeamSelectAsset(item)
@@ -776,6 +896,14 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeMatchSelectKind(item.type) ||
         normalizeMatchSelectKind(item.kind) ||
         normalizeMatchSelectKind(item.key)
+      const isStartPosition =
+        normalizeStartPositionKind(item.type) ||
+        normalizeStartPositionKind(item.kind) ||
+        normalizeStartPositionKind(item.key)
+      const isMovement =
+        normalizeMovementKind(item.type) ||
+        normalizeMovementKind(item.kind) ||
+        normalizeMovementKind(item.key)
       const isTeamSelect = isTeamSelectAsset(item)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
       const actionButtonKind = normalizeActionButtonKind(item.type)
@@ -783,11 +911,16 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         : normalizeActionButtonKind(item.kind)
           ? item.kind
           : null
+      const stageParentId = parseStageParentId(item)
+      const stageHideAfterSelection = parseStageFlag(item.stageHideAfterSelection)
+      const stageBlurBackgroundOnClick = parseStageFlag(item.stageBlurBackgroundOnClick)
+      const stageHideOtherElementsInStage = parseStageFlag(item.stageHideOtherElementsInStage)
 
       if (isCover) {
         return {
           id,
           type: "cover",
+          stageParentId,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -800,6 +933,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "input",
           tag: parseAssetTag(item),
+          stageParentId,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -816,13 +950,26 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
       }
 
       if (isAutoToggle) {
+        const autoDurationSeconds =
+          toNonNegativeWholeNumber(item.autoToggleDurationSeconds) ??
+          toNonNegativeWholeNumber(item.durationSeconds) ??
+          undefined
+
+        const autoMode =
+          typeof item.autoToggleMode === "string" && item.autoToggleMode.trim().toLowerCase() === "teleop"
+            ? "teleop"
+            : "auto"
+
         return {
           id,
           type: "auto-toggle",
+          stageParentId,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
           height: clampSizeScale(item.height as number),
+          mode: autoMode,
+          durationSeconds: autoDurationSeconds,
         } satisfies AutoToggleAsset
       }
 
@@ -845,6 +992,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "toggle-switch",
           tag: parseAssetTag(item),
+          stageParentId,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -855,7 +1003,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
               : typeof item.text === "string" && item.text.trim().length > 0
                 ? item.text
                 : undefined,
-          value: toBoolean(item.value) ?? false,
+            value: toBoolean(item.value) ?? toBoolean(item.toggleOn) ?? false,
           textAlign:
             toggleTextAlign === "left" || toggleTextAlign === "right" || toggleTextAlign === "center"
               ? toggleTextAlign
@@ -868,6 +1016,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "log",
+          stageParentId,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -875,10 +1024,50 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         } satisfies LogAsset
       }
 
+      if (isStartPosition) {
+        return {
+          id,
+          type: "start-position",
+          tag: parseAssetTag(item),
+          stageParentId,
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label.trim()
+              : "Start Position",
+          startPositionVisible: parseStageFlag(item.startPositionVisible, true),
+        } satisfies StartPositionAsset
+      }
+
+      if (isMovement) {
+        return {
+          id,
+          type: "movement",
+          tag: parseAssetTag(item),
+          stageParentId,
+          stageHideAfterSelection,
+          stageBlurBackgroundOnClick,
+          stageHideOtherElementsInStage,
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label.trim()
+              : "Movement",
+          movementDirection: normalizeMovementDirection(item.movementDirection),
+        } satisfies MovementAsset
+      }
+
       if (isMatchSelect) {
         const parsedMatchValue =
           toNonNegativeWholeNumber(item.valueText) ??
           toNonNegativeWholeNumber(item.value) ??
+          toNonNegativeWholeNumber(item.matchSelectValue) ??
           toNonNegativeWholeNumber(item.matchNumber) ??
           toNonNegativeWholeNumber(item.match) ??
           toNonNegativeWholeNumber(item.number) ??
@@ -887,6 +1076,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "match-select",
+          stageParentId,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -915,10 +1105,15 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           type: "icon-button",
           tag: parseAssetTag(item),
           increment: parsedIncrement ?? undefined,
+          buttonPressMode: normalizePressMode(item.buttonPressMode ?? item.pressMode),
+          stageParentId,
           stageParentTag:
             typeof item.stageParentTag === "string" && item.stageParentTag.trim().length > 0
               ? item.stageParentTag
               : undefined,
+          stageHideAfterSelection,
+          stageBlurBackgroundOnClick,
+          stageHideOtherElementsInStage,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -945,6 +1140,11 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         // Team-select assets can come through with an empty tag, so set a stable internal tag.
         tag: isTeamSelect ? "team-select" : parseAssetTag(item),
         increment: parsedIncrement ?? undefined,
+        buttonPressMode: normalizePressMode(item.buttonPressMode ?? item.pressMode),
+        stageParentId,
+        stageHideAfterSelection,
+        stageBlurBackgroundOnClick,
+        stageHideOtherElementsInStage,
         x: clampPositionScale(item.x as number),
         y: clampPositionScale(item.y as number),
         width: clampSizeScale(item.width as number),
@@ -961,6 +1161,22 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
                 : undefined,
       } satisfies ButtonAsset
     })
+}
+
+function isStageableAsset(asset: ScoutAsset): asset is ButtonAsset | IconButtonAsset | MovementAsset {
+  return asset.type === "button" || asset.type === "icon-button" || asset.type === "movement"
+}
+
+function getAssetRuntimeKey(asset: ScoutAsset) {
+  if ("tag" in asset && typeof asset.tag === "string" && asset.tag.trim().length > 0) {
+    return asset.tag.trim()
+  }
+
+  return asset.id
+}
+
+function normalizeRuntimeTag(tag: string) {
+  return tag.trim()
 }
 
 export default function ScoutPage() {
@@ -984,21 +1200,152 @@ export default function ScoutPage() {
   const [inputValuesByKey, setInputValuesByKey] = useState<Record<string, string>>({})
   const [toggleValuesByKey, setToggleValuesByKey] = useState<Record<string, boolean>>({})
   const [matchValuesByKey, setMatchValuesByKey] = useState<Record<string, number>>({})
+  const [toggleTransitionCountByKey, setToggleTransitionCountByKey] = useState<Record<string, number>>({})
+  const [toggleLastChangedAtByKey, setToggleLastChangedAtByKey] = useState<Record<string, number>>({})
   const [editingMatchKey, setEditingMatchKey] = useState<string | null>(null)
   const [editingMatchDraft, setEditingMatchDraft] = useState<string>("")
   const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
+  const [eventKey, setEventKey] = useState<string>("")
   const [scouterName, setScouterName] = useState<string>("")
   const [controlMode, setControlMode] = useState<ControlMode>("auto")
   const [autoTimerStartedAtMs, setAutoTimerStartedAtMs] = useState<number | null>(null)
   const [autoTimerRemainingMs, setAutoTimerRemainingMs] = useState<number>(AUTO_TIMER_DURATION_MS)
+  const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number>(Date.now())
   const [teamValue, setTeamValue] = useState<string>(TEAM_DEFAULT_VALUE)
   const [eventScheduleMatches, setEventScheduleMatches] = useState<TbaSimpleMatch[]>([])
+  const [previewStageParentId, setPreviewStageParentId] = useState<string | null>(null)
+  const [runtimeEvents, setRuntimeEvents] = useState<RuntimeActionEvent[]>([])
+  const [previewHoldDurationsById, setPreviewHoldDurationsById] = useState<Record<string, number>>({})
+  const [holdStatsByKey, setHoldStatsByKey] = useState<Record<string, HoldStats>>({})
+  const holdStartByAssetIdRef = useRef<Record<string, number>>({})
+  const holdIntervalRef = useRef<number | null>(null)
+  const [startPositionsByAssetId, setStartPositionsByAssetId] = useState<
+    Record<string, { xRatio: number; yRatio: number; selectedAtMs: number }>
+  >({})
+  const [hiddenStartPositionIds, setHiddenStartPositionIds] = useState<Record<string, true>>({})
+  const [lockedStartPositionByAssetId, setLockedStartPositionByAssetId] = useState<
+    Record<string, { xRatio: number | null; yRatio: number | null; lockedAtMs: number }>
+  >({})
+  const [movementSharedDirection, setMovementSharedDirection] = useState<"left" | "right">("left")
+  const [movementToggleCount, setMovementToggleCount] = useState<number>(0)
+  const [movementPositionEvents, setMovementPositionEvents] = useState<RuntimeActionEvent[]>([])
   const isPreviewMode = true
   const { setHeaderActions } = useHeaderActions()
 
+  const getNowMs = useCallback(() => Math.max(0, Date.now() - sessionStartedAtMs), [sessionStartedAtMs])
+
+  const recordRuntimeEvent = useCallback(
+    (event: Omit<RuntimeActionEvent, "atMs"> & { atMs?: number }) => {
+      setRuntimeEvents((previous) => [
+        ...previous,
+        {
+          ...event,
+          atMs: typeof event.atMs === "number" ? event.atMs : getNowMs(),
+        },
+      ])
+    },
+    [getNowMs]
+  )
+
+  const clearHoldInterval = useCallback(() => {
+    if (holdIntervalRef.current !== null) {
+      window.clearInterval(holdIntervalRef.current)
+      holdIntervalRef.current = null
+    }
+  }, [])
+
+  const stopHoldForAsset = useCallback(
+    (assetId: string, key: string) => {
+      const activeStart = holdStartByAssetIdRef.current[assetId]
+      if (typeof activeStart !== "number") return
+
+      const endMs = getNowMs()
+      const durationMs = Math.max(0, endMs - activeStart)
+
+      const nextStarts = { ...holdStartByAssetIdRef.current }
+      delete nextStarts[assetId]
+      holdStartByAssetIdRef.current = nextStarts
+
+      setPreviewHoldDurationsById((previous) => {
+        if (!(assetId in previous)) return previous
+
+        const next = { ...previous }
+        delete next[assetId]
+        return next
+      })
+
+      setHoldStatsByKey((previous) => {
+        const existing = previous[key]
+
+        if (!existing) {
+          return {
+            ...previous,
+            [key]: {
+              assetId,
+              mode: "hold",
+              totalMs: durationMs,
+              pressCount: 1,
+              segments: [
+                {
+                  startMs: activeStart,
+                  endMs,
+                  durationMs,
+                },
+              ],
+            },
+          }
+        }
+
+        return {
+          ...previous,
+          [key]: {
+            ...existing,
+            totalMs: existing.totalMs + durationMs,
+            pressCount: existing.pressCount + 1,
+            segments: [
+              ...existing.segments,
+              {
+                startMs: activeStart,
+                endMs,
+                durationMs,
+              },
+            ],
+          },
+        }
+      })
+
+      recordRuntimeEvent({
+        type: "hold-end",
+        assetId,
+        key,
+        atMs: endMs,
+        durationMs,
+      })
+
+      if (Object.keys(nextStarts).length === 0) {
+        clearHoldInterval()
+      }
+    },
+    [clearHoldInterval, getNowMs, recordRuntimeEvent]
+  )
+
+  const stopAllActiveHolds = useCallback(() => {
+    const activeIds = Object.keys(holdStartByAssetIdRef.current)
+    if (activeIds.length === 0) return
+
+    const stageAssetById = new Map(scoutAssets.map((asset) => [asset.id, asset] as const))
+    activeIds.forEach((assetId) => {
+      const asset = stageAssetById.get(assetId)
+      if (!asset) return
+      stopHoldForAsset(assetId, normalizeRuntimeTag(getAssetRuntimeKey(asset)))
+    })
+  }, [scoutAssets, stopHoldForAsset])
+
   useEffect(() => {
+    setSessionStartedAtMs(Date.now())
+
     const storedScouterName = localStorage.getItem("scouterName")
     setScouterName(storedScouterName?.trim() ?? "")
 
@@ -1027,11 +1374,31 @@ export default function ScoutPage() {
     try {
       const parsedPayload = JSON.parse(storedPayload) as unknown
       const normalizedPayload = typeof parsedPayload === "string" ? tryParseJson(parsedPayload) : parsedPayload
-      setScoutAssets(parseScoutAssets(normalizedPayload))
+      const parsedAssets = parseScoutAssets(normalizedPayload)
+      setScoutAssets(parsedAssets)
       setMirrorLine(parseMirrorLine(normalizedPayload))
+
+      if (normalizedPayload && typeof normalizedPayload === "object") {
+        const rootPayload = normalizedPayload as {
+          eventKey?: unknown
+          editorState?: {
+            eventKey?: unknown
+          }
+        }
+
+        const parsedEventKey =
+          typeof rootPayload.editorState?.eventKey === "string"
+            ? rootPayload.editorState.eventKey.trim()
+            : typeof rootPayload.eventKey === "string"
+              ? rootPayload.eventKey.trim()
+              : ""
+
+        setEventKey(parsedEventKey)
+      }
     } catch {
       setScoutAssets([])
       setMirrorLine(null)
+      setEventKey("")
     }
   }, [])
 
@@ -1162,17 +1529,64 @@ export default function ScoutPage() {
     })
   }, [isSwapped, mirrorLine, scoutAssets])
 
+  const activePreviewStageRoot = useMemo(() => {
+    if (!previewStageParentId) return null
+    const stageRoot = displayedAssets.find((asset) => asset.id === previewStageParentId)
+    if (!stageRoot || !isStageableAsset(stageRoot)) return null
+    return stageRoot
+  }, [displayedAssets, previewStageParentId])
+
+  const visibleAssets = useMemo(() => {
+    if (!previewStageParentId) {
+      return displayedAssets.filter((asset) => !asset.stageParentId)
+    }
+
+    const stageRoot = displayedAssets.find((asset) => asset.id === previewStageParentId)
+    if (!stageRoot || !isStageableAsset(stageRoot)) {
+      return displayedAssets.filter((asset) => !asset.stageParentId)
+    }
+
+    const hideRoot = Boolean(stageRoot.stageHideAfterSelection)
+    const hideOthers = Boolean(stageRoot.stageHideOtherElementsInStage)
+
+    if (hideOthers) {
+      return displayedAssets.filter(
+        (asset) => asset.stageParentId === previewStageParentId || (!hideRoot && asset.id === previewStageParentId)
+      )
+    }
+
+    return displayedAssets.filter((asset) => {
+      if (asset.stageParentId === previewStageParentId) return true
+      if (asset.id === previewStageParentId) return !hideRoot
+      return !asset.stageParentId
+    })
+  }, [displayedAssets, previewStageParentId])
+
   const isSwapMirrored = useMemo(() => isSwapped, [isSwapped])
 
   const coverAssets = useMemo(
-    () => displayedAssets.filter((asset): asset is CoverAsset => asset.type === "cover"),
-    [displayedAssets]
+    () => visibleAssets.filter((asset): asset is CoverAsset => asset.type === "cover"),
+    [visibleAssets]
   )
 
   const primaryMatchSelectAsset = useMemo(
     () => scoutAssets.find((asset): asset is MatchSelectAsset => asset.type === "match-select") ?? null,
     [scoutAssets]
   )
+
+  const primaryAutoToggleAsset = useMemo(
+    () => scoutAssets.find((asset): asset is AutoToggleAsset => asset.type === "auto-toggle") ?? null,
+    [scoutAssets]
+  )
+
+  const autoTimerDurationMs = useMemo(() => {
+    const parsedDurationSeconds = primaryAutoToggleAsset?.durationSeconds
+    if (typeof parsedDurationSeconds !== "number" || parsedDurationSeconds <= 0) {
+      return AUTO_TIMER_DURATION_MS
+    }
+
+    return parsedDurationSeconds * 1000
+  }, [primaryAutoToggleAsset?.durationSeconds])
 
   const selectedMatchNumber = useMemo(() => {
     if (!primaryMatchSelectAsset) return null
@@ -1228,13 +1642,45 @@ export default function ScoutPage() {
     }
   }, [TEAM_DEFAULT_VALUE, teamSelectOptions, teamValue])
 
+  useEffect(() => {
+    if (!primaryAutoToggleAsset) {
+      setControlMode("auto")
+      setAutoTimerRemainingMs(AUTO_TIMER_DURATION_MS)
+      setAutoTimerStartedAtMs(null)
+      return
+    }
+
+    setControlMode(primaryAutoToggleAsset.mode ?? "auto")
+    setAutoTimerRemainingMs(autoTimerDurationMs)
+    setAutoTimerStartedAtMs(null)
+  }, [autoTimerDurationMs, primaryAutoToggleAsset])
+
   const buttonAssets = useMemo(
     () =>
-      displayedAssets.filter(
-        (asset): asset is ButtonAsset | IconButtonAsset | InputAsset | AutoToggleAsset | ToggleSwitchAsset | MatchSelectAsset | LogAsset =>
+      visibleAssets.filter(
+        (asset): asset is
+          | ButtonAsset
+          | IconButtonAsset
+          | InputAsset
+          | AutoToggleAsset
+          | ToggleSwitchAsset
+          | MatchSelectAsset
+          | StartPositionAsset
+          | MovementAsset
+          | LogAsset =>
           asset.type !== "cover"
       ),
-    [displayedAssets]
+    [visibleAssets]
+  )
+
+  const stageRootIds = useMemo(
+    () =>
+      new Set(
+        scoutAssets
+          .map((asset) => asset.stageParentId)
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      ),
+    [scoutAssets]
   )
 
   useEffect(() => {
@@ -1251,6 +1697,8 @@ export default function ScoutPage() {
       }, {})
 
     setToggleValuesByKey(initialToggleValues)
+    setToggleTransitionCountByKey({})
+    setToggleLastChangedAtByKey({})
   }, [scoutAssets])
 
   useEffect(() => {
@@ -1267,6 +1715,33 @@ export default function ScoutPage() {
     setEditingMatchDraft("")
   }, [scoutAssets])
 
+  useEffect(() => {
+    const initialMovementAsset = scoutAssets.find(
+      (asset): asset is MovementAsset => asset.type === "movement"
+    )
+
+    setMovementSharedDirection(initialMovementAsset?.movementDirection ?? "left")
+    setMovementToggleCount(0)
+    setMovementPositionEvents([])
+    setPreviewStageParentId(null)
+    setStartPositionsByAssetId({})
+    setHiddenStartPositionIds({})
+    setLockedStartPositionByAssetId({})
+    setRuntimeEvents([])
+    setHoldStatsByKey({})
+    setPreviewHoldDurationsById({})
+    holdStartByAssetIdRef.current = {}
+    clearHoldInterval()
+  }, [clearHoldInterval, scoutAssets])
+
+  useEffect(() => {
+    if (!previewStageParentId) return
+    if (scoutAssets.some((asset) => asset.id === previewStageParentId)) return
+    setPreviewStageParentId(null)
+  }, [previewStageParentId, scoutAssets])
+
+  useEffect(() => () => clearHoldInterval(), [clearHoldInterval])
+
   const startEditingMatchValue = useCallback((matchKey: string, currentValue: number) => {
     setEditingMatchKey(matchKey)
     setEditingMatchDraft(String(currentValue))
@@ -1281,12 +1756,18 @@ export default function ScoutPage() {
           ...previous,
           [matchKey]: parsed,
         }))
+
+        recordRuntimeEvent({
+          type: "match-change",
+          key: matchKey,
+          value: parsed,
+        })
       }
 
       setEditingMatchKey((previous) => (previous === matchKey ? null : previous))
       setEditingMatchDraft("")
     },
-    [editingMatchDraft]
+    [editingMatchDraft, recordRuntimeEvent]
   )
 
   const cancelEditingMatchValue = useCallback((matchKey: string) => {
@@ -1297,21 +1778,72 @@ export default function ScoutPage() {
   const setTeleopMode = useCallback(() => {
     setControlMode("teleop")
     setAutoTimerStartedAtMs(null)
-    setAutoTimerRemainingMs(AUTO_TIMER_DURATION_MS)
-  }, [])
+    setAutoTimerRemainingMs(autoTimerDurationMs)
+    recordRuntimeEvent({ type: "mode-change", value: "teleop" })
+  }, [autoTimerDurationMs, recordRuntimeEvent])
 
-  const setAutoMode = useCallback((startTimer: boolean) => {
-    setControlMode("auto")
+  const setAutoMode = useCallback(
+    (startTimer: boolean) => {
+      setControlMode("auto")
 
-    if (startTimer) {
-      setAutoTimerStartedAtMs(Date.now())
-      setAutoTimerRemainingMs(AUTO_TIMER_DURATION_MS)
-      return
-    }
+      if (startTimer) {
+        const startedAtMs = Date.now()
+        setAutoTimerStartedAtMs(startedAtMs)
+        setAutoTimerRemainingMs(autoTimerDurationMs)
 
-    setAutoTimerStartedAtMs(null)
-    setAutoTimerRemainingMs(AUTO_TIMER_DURATION_MS)
-  }, [])
+        setHiddenStartPositionIds((previous) => {
+          const next = { ...previous }
+          scoutAssets
+            .filter((asset): asset is StartPositionAsset => asset.type === "start-position")
+            .forEach((asset) => {
+              next[asset.id] = true
+            })
+          return next
+        })
+
+        const lockAtMs = getNowMs()
+        setLockedStartPositionByAssetId((previous) => {
+          const next = { ...previous }
+
+          scoutAssets
+            .filter((asset): asset is StartPositionAsset => asset.type === "start-position")
+            .forEach((asset) => {
+              const existing = startPositionsByAssetId[asset.id]
+              next[asset.id] = {
+                xRatio: existing?.xRatio ?? null,
+                yRatio: existing?.yRatio ?? null,
+                lockedAtMs: lockAtMs,
+              }
+
+              recordRuntimeEvent({
+                type: "start-position-lock",
+                assetId: asset.id,
+                key: normalizeRuntimeTag(getAssetRuntimeKey(asset)),
+                atMs: lockAtMs,
+                xRatio: existing?.xRatio,
+                yRatio: existing?.yRatio,
+              })
+            })
+
+          return next
+        })
+
+        recordRuntimeEvent({ type: "mode-change", value: "auto-running" })
+        return
+      }
+
+      setAutoTimerStartedAtMs(null)
+      setAutoTimerRemainingMs(autoTimerDurationMs)
+      recordRuntimeEvent({ type: "mode-change", value: "auto" })
+    },
+    [
+      autoTimerDurationMs,
+      getNowMs,
+      recordRuntimeEvent,
+      scoutAssets,
+      startPositionsByAssetId,
+    ]
+  )
 
   const isAutoTimerRunning = controlMode === "auto" && autoTimerStartedAtMs !== null
   const autoTimerLabel = isAutoTimerRunning ? (autoTimerRemainingMs / 1000).toFixed(2) : "Auto"
@@ -1350,7 +1882,7 @@ export default function ScoutPage() {
 
     const timerId = window.setInterval(() => {
       const elapsedMs = Date.now() - autoTimerStartedAtMs
-      const remainingMs = Math.max(0, AUTO_TIMER_DURATION_MS - elapsedMs)
+      const remainingMs = Math.max(0, autoTimerDurationMs - elapsedMs)
       setAutoTimerRemainingMs(remainingMs)
 
       if (remainingMs <= 0) {
@@ -1359,19 +1891,21 @@ export default function ScoutPage() {
     }, 10)
 
     return () => window.clearInterval(timerId)
-  }, [autoTimerStartedAtMs, controlMode, setTeleopMode])
+  }, [autoTimerDurationMs, autoTimerStartedAtMs, controlMode, setTeleopMode])
 
   const handleSwapSides = useCallback(() => {
     if (!mirrorLine) return
     setIsSwapped((previous) => !previous)
-  }, [mirrorLine])
+    recordRuntimeEvent({ type: "swap-sides", value: !isSwapped })
+  }, [isSwapped, mirrorLine, recordRuntimeEvent])
 
-  const pushTagToStack = useCallback((tag?: string, increment = 1) => {
+  const pushTagToStack = useCallback((tag?: string, increment = 1, assetId?: string, rawTag?: string) => {
     if (!tag || tag.trim().length === 0) return
     const repeatCount = Math.max(0, Math.floor(increment))
     if (repeatCount === 0) return
 
     const prefixedTag = toModePrefixedTag(tag, controlMode)
+    const atMs = getNowMs()
 
     setTagStack((previous) => [
       ...previous,
@@ -1386,7 +1920,171 @@ export default function ScoutPage() {
     ])
     setRedoTagStack([])
     setRedoTagStackActions([])
-  }, [controlMode])
+
+    recordRuntimeEvent({
+      type: "tap",
+      assetId,
+      key: rawTag ?? tag,
+      atMs,
+      valueDelta: repeatCount,
+    })
+  }, [controlMode, getNowMs, recordRuntimeEvent])
+
+  const handleStageToggle = useCallback(
+    (asset: ButtonAsset | IconButtonAsset | MovementAsset) => {
+      const hasChildren = scoutAssets.some((candidate) => candidate.stageParentId === asset.id)
+      if (!hasChildren) return false
+
+      setPreviewStageParentId((previous) => {
+        const nextValue = previous === asset.id ? null : asset.id
+
+        recordRuntimeEvent({
+          type: nextValue ? "stage-enter" : "stage-exit",
+          assetId: asset.id,
+          key: normalizeRuntimeTag(getAssetRuntimeKey(asset)),
+          value: nextValue ? "open" : "closed",
+        })
+
+        return nextValue
+      })
+
+      return true
+    },
+    [recordRuntimeEvent, scoutAssets]
+  )
+
+  const startHoldForAsset = useCallback(
+    (asset: ButtonAsset | IconButtonAsset) => {
+      const pressMode = asset.buttonPressMode ?? "tap"
+      if (pressMode !== "hold") return
+
+      const key = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+      if (typeof holdStartByAssetIdRef.current[asset.id] === "number") return
+
+      const startMs = getNowMs()
+      holdStartByAssetIdRef.current = {
+        ...holdStartByAssetIdRef.current,
+        [asset.id]: startMs,
+      }
+
+      setPreviewHoldDurationsById((previous) => ({
+        ...previous,
+        [asset.id]: 0,
+      }))
+
+      recordRuntimeEvent({
+        type: "hold-start",
+        assetId: asset.id,
+        key,
+        atMs: startMs,
+      })
+
+      if (holdIntervalRef.current !== null) return
+
+      holdIntervalRef.current = window.setInterval(() => {
+        const activeStartById = holdStartByAssetIdRef.current
+        const activeIds = Object.keys(activeStartById)
+
+        if (activeIds.length === 0) {
+          clearHoldInterval()
+          return
+        }
+
+        const nowMs = getNowMs()
+        setPreviewHoldDurationsById((previous) => {
+          const next: Record<string, number> = {}
+          let changed = false
+
+          activeIds.forEach((activeId) => {
+            const elapsed = Math.max(0, nowMs - activeStartById[activeId])
+            next[activeId] = elapsed
+            if (previous[activeId] !== elapsed) {
+              changed = true
+            }
+          })
+
+          if (Object.keys(previous).length !== activeIds.length) {
+            changed = true
+          }
+
+          return changed ? next : previous
+        })
+      }, 25)
+    },
+    [clearHoldInterval, getNowMs, recordRuntimeEvent]
+  )
+
+  const handleMovementAssetClick = useCallback(
+    (asset: MovementAsset) => {
+      if (handleStageToggle(asset)) return
+
+      setMovementSharedDirection((previous) => {
+        const nextDirection = previous === "left" ? "right" : "left"
+        const key = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+
+        setMovementToggleCount((count) => count + 1)
+        setMovementPositionEvents((previousEvents) => [
+          ...previousEvents,
+          {
+            type: "movement-position",
+            assetId: asset.id,
+            key,
+            atMs: getNowMs(),
+            zone: key,
+            action: "crossed",
+            value: nextDirection,
+          },
+        ])
+
+        recordRuntimeEvent({
+          type: "movement-toggle",
+          assetId: asset.id,
+          key,
+          value: nextDirection,
+        })
+
+        return nextDirection
+      })
+    },
+    [getNowMs, handleStageToggle, recordRuntimeEvent]
+  )
+
+  const handleStartPositionTap = useCallback(
+    (asset: StartPositionAsset, event: React.PointerEvent<HTMLDivElement>) => {
+      const rect = event.currentTarget.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return
+
+      const xRatio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+      const yRatio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))
+      const atMs = getNowMs()
+
+      setStartPositionsByAssetId((previous) => ({
+        ...previous,
+        [asset.id]: {
+          xRatio,
+          yRatio,
+          selectedAtMs: atMs,
+        },
+      }))
+
+      setHiddenStartPositionIds((previous) => {
+        if (!(asset.id in previous)) return previous
+        const next = { ...previous }
+        delete next[asset.id]
+        return next
+      })
+
+      recordRuntimeEvent({
+        type: "start-position-set",
+        assetId: asset.id,
+        key: normalizeRuntimeTag(getAssetRuntimeKey(asset)),
+        atMs,
+        xRatio,
+        yRatio,
+      })
+    },
+    [getNowMs, recordRuntimeEvent]
+  )
 
   const handleUndo = useCallback(() => {
     const lastAction = tagStackActions[tagStackActions.length - 1]
@@ -1399,7 +2097,13 @@ export default function ScoutPage() {
       ...Array.from({ length: lastAction.count }, () => lastAction.tag),
     ])
     setRedoTagStackActions((previous) => [...previous, lastAction])
-  }, [tagStackActions])
+
+    recordRuntimeEvent({
+      type: "undo",
+      key: lastAction.tag,
+      valueDelta: -lastAction.count,
+    })
+  }, [recordRuntimeEvent, tagStackActions])
 
   const handleRedo = useCallback(() => {
     const lastRedoAction = redoTagStackActions[redoTagStackActions.length - 1]
@@ -1412,9 +2116,17 @@ export default function ScoutPage() {
       ...Array.from({ length: lastRedoAction.count }, () => lastRedoAction.tag),
     ])
     setTagStackActions((previous) => [...previous, lastRedoAction])
-  }, [redoTagStackActions])
+
+    recordRuntimeEvent({
+      type: "redo",
+      key: lastRedoAction.tag,
+      valueDelta: lastRedoAction.count,
+    })
+  }, [recordRuntimeEvent, redoTagStackActions])
 
   const handleSubmit = useCallback(async () => {
+    stopAllActiveHolds()
+
     const output: Record<string, number | string | boolean> = {}
 
     const uniqueButtonAndIconTags = [
@@ -1483,7 +2195,134 @@ export default function ScoutPage() {
     output.team = teamValue
     output.scouter = scouterName
 
-    const payloadJson = JSON.stringify(output)
+    const buttonSummary = scoutAssets
+      .filter(
+        (asset): asset is ButtonAsset | IconButtonAsset =>
+          (asset.type === "button" || asset.type === "icon-button") &&
+          typeof asset.tag === "string" &&
+          asset.tag.trim().length > 0
+      )
+      .reduce<Record<string, Record<string, unknown>>>((accumulator, asset) => {
+        const key = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+        const mode = asset.buttonPressMode ?? "tap"
+
+        if (mode === "hold") {
+          const holdStats = holdStatsByKey[key]
+          accumulator[key] = {
+            assetId: asset.id,
+            mode: "hold",
+            hold: {
+              totalMs: holdStats?.totalMs ?? 0,
+              pressCount: holdStats?.pressCount ?? 0,
+              segments: holdStats?.segments ?? [],
+            },
+          }
+          return accumulator
+        }
+
+        const normalizedTag = stripModePrefix(key)
+        const autoCount = tagStack.filter((stackTag) => stackTag === `auto.${normalizedTag}`).length
+        const teleopCount = tagStack.filter((stackTag) => stackTag === `teleop.${normalizedTag}`).length
+        const tapCount = autoCount + teleopCount
+
+        accumulator[key] = {
+          assetId: asset.id,
+          mode: "tap",
+          tapCount,
+          value: tapCount * Math.max(1, asset.increment ?? 1),
+          lastTapMs: (() => {
+            const tapEvents = runtimeEvents.filter(
+              (event) => event.type === "tap" && event.assetId === asset.id
+            )
+            const lastTapEvent = tapEvents[tapEvents.length - 1]
+            return lastTapEvent?.atMs ?? null
+          })(),
+        }
+
+        return accumulator
+      }, {})
+
+    const startPositionSummary = scoutAssets
+      .filter((asset): asset is StartPositionAsset => asset.type === "start-position")
+      .reduce<Record<string, Record<string, unknown>>>((accumulator, asset) => {
+        const key = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+        const selected = startPositionsByAssetId[asset.id]
+        const locked = lockedStartPositionByAssetId[asset.id]
+
+        accumulator[key] = {
+          assetId: asset.id,
+          key,
+          selected: Boolean(selected),
+          xRatio: selected?.xRatio ?? null,
+          yRatio: selected?.yRatio ?? null,
+          xPercent: typeof selected?.xRatio === "number" ? Math.round(selected.xRatio * 100) : null,
+          yPercent: typeof selected?.yRatio === "number" ? Math.round(selected.yRatio * 100) : null,
+          selectedAtMs: selected?.selectedAtMs ?? null,
+          lockedOnAutoStart: Boolean(locked),
+          lockedAtMs: locked?.lockedAtMs ?? null,
+          lockedXRatio: locked?.xRatio ?? null,
+          lockedYRatio: locked?.yRatio ?? null,
+        }
+
+        return accumulator
+      }, {})
+
+    const togglesSummary = uniqueToggleTags.reduce<Record<string, Record<string, unknown>>>((accumulator, tag) => {
+      accumulator[tag] = {
+        value: toggleValuesByKey[tag] ?? false,
+        transitionCount: toggleTransitionCountByKey[tag] ?? 0,
+        lastChangedAtMs: toggleLastChangedAtByKey[tag] ?? null,
+      }
+      return accumulator
+    }, {})
+
+    const movementHistory = runtimeEvents
+      .filter((event) => event.type === "movement-toggle")
+      .map((event) => ({ atMs: event.atMs, direction: event.value }))
+
+    const movementSummary = {
+      sharedDirection: movementSharedDirection,
+      toggleCount: movementToggleCount,
+      history: movementHistory,
+      positionEvents: movementPositionEvents,
+    }
+
+    const inputsSummary = {
+      ...uniqueInputTags.reduce<Record<string, string>>((accumulator, tag) => {
+        accumulator[tag] = inputValuesByKey[tag] ?? ""
+        return accumulator
+      }, {}),
+      team: teamValue,
+      match: selectedMatchNumber ?? 0,
+      scouter: scouterName,
+    }
+
+    const payloadObject = {
+      version: 1,
+      eventKey,
+      team: teamValue,
+      match: selectedMatchNumber ?? 0,
+      scouter: scouterName,
+      startedAt: new Date(sessionStartedAtMs).toISOString(),
+      submittedAt: new Date().toISOString(),
+      matchData: {
+        startPosition: startPositionSummary,
+        buttons: buttonSummary,
+        movement: movementSummary,
+        toggles: togglesSummary,
+        inputs: inputsSummary,
+        meta: {
+          controlMode,
+          swapped: isSwapped,
+          autoTimerRemainingMs,
+        },
+      },
+      events: runtimeEvents,
+      legacy: output,
+      ...output,
+    }
+
+    const payloadJson = JSON.stringify(payloadObject)
     setSubmitPayloadJson(payloadJson)
 
     try {
@@ -1498,16 +2337,31 @@ export default function ScoutPage() {
 
     setIsSubmitDialogOpen(true)
 
-    console.log("[ScoutPage] submit payload:", output)
+    console.log("[ScoutPage] submit payload:", payloadObject)
   }, [
     TEAM_SELECT_TAG,
+    autoTimerRemainingMs,
+    controlMode,
+    eventKey,
+    holdStatsByKey,
     inputValuesByKey,
+    isSwapped,
+    lockedStartPositionByAssetId,
+    movementPositionEvents,
+    movementSharedDirection,
+    movementToggleCount,
+    runtimeEvents,
     scoutAssets,
     scouterName,
     selectedMatchNumber,
+    sessionStartedAtMs,
+    startPositionsByAssetId,
     tagStack,
     teamValue,
+    toggleLastChangedAtByKey,
+    toggleTransitionCountByKey,
     toggleValuesByKey,
+    stopAllActiveHolds,
   ])
 
   useEffect(() => {
@@ -1622,11 +2476,26 @@ export default function ScoutPage() {
           "relative",
           isFullscreen ? "h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
         )}
+        onPointerDown={(event) => {
+          if (event.target !== event.currentTarget) return
+          if (!previewStageParentId) return
+
+          setPreviewStageParentId(null)
+          recordRuntimeEvent({
+            type: "stage-exit",
+            key: previewStageParentId,
+            value: "background",
+          })
+        }}
       >
         {isFallbackFullscreen ? (
           <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-white/15 bg-slate-900/90 px-3 py-1 text-xs text-white/80 shadow-sm">
             App fullscreen mode (native fullscreen is not available on this browser)
           </div>
+        ) : null}
+
+        {activePreviewStageRoot?.stageBlurBackgroundOnClick ? (
+          <div className="pointer-events-none absolute inset-0 z-10 backdrop-blur-[2px]" />
         ) : null}
 
         {coverAssets.map((asset, index) => {
@@ -1637,6 +2506,15 @@ export default function ScoutPage() {
               key={asset.id ?? `cover-${index}`}
               className="absolute rounded-md border border-white/10 bg-slate-900 transition-all duration-150 ease-out"
               style={commonStyle}
+              onClick={() => {
+                if (!previewStageParentId) return
+                setPreviewStageParentId(null)
+                recordRuntimeEvent({
+                  type: "stage-exit",
+                  key: previewStageParentId,
+                  value: "cover",
+                })
+              }}
             />
           )
         })}
@@ -1646,7 +2524,10 @@ export default function ScoutPage() {
 
           if (asset.type === "icon-button") {
             const Icon = getLucideIcon(asset.iconName)
-            const hasStageBadge = Boolean(asset.stageParentTag)
+            const hasStageBadge = Boolean(asset.stageParentTag) || stageRootIds.has(asset.id)
+            const runtimeKey = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+            const isHoldMode = (asset.buttonPressMode ?? "tap") === "hold"
+            const holdDurationMs = previewHoldDurationsById[asset.id]
 
             return (
               <Button
@@ -1655,7 +2536,15 @@ export default function ScoutPage() {
                 variant="outline"
                 className="absolute rounded-lg border border-white/20 bg-slate-900 p-0 text-white hover:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
                 style={sizedStyle}
-                onClick={() => pushTagToStack(asset.tag, asset.increment ?? 1)}
+                onClick={() => {
+                  if (handleStageToggle(asset)) return
+                  if (isHoldMode) return
+                  pushTagToStack(runtimeKey, asset.increment ?? 1, asset.id, runtimeKey)
+                }}
+                onPointerDown={() => startHoldForAsset(asset)}
+                onPointerUp={() => stopHoldForAsset(asset.id, runtimeKey)}
+                onPointerCancel={() => stopHoldForAsset(asset.id, runtimeKey)}
+                onPointerLeave={() => stopHoldForAsset(asset.id, runtimeKey)}
               >
                 <Icon
                   className="h-5 w-5"
@@ -1667,6 +2556,11 @@ export default function ScoutPage() {
                 {hasStageBadge ? (
                   <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
                     <LucideIcons.ChevronDown className="h-3 w-3" />
+                  </span>
+                ) : null}
+                {isHoldMode && typeof holdDurationMs === "number" ? (
+                  <span className="pointer-events-none absolute -bottom-5 left-1/2 -translate-x-1/2 rounded bg-slate-900/95 px-1.5 py-0.5 text-[10px] text-white/90">
+                    {(holdDurationMs / 1000).toFixed(2)}
                   </span>
                 ) : null}
               </Button>
@@ -1694,6 +2588,13 @@ export default function ScoutPage() {
                       ...previous,
                       [inputStateKey]: nextValue,
                     }))
+
+                    recordRuntimeEvent({
+                      type: "input-change",
+                      assetId: asset.id,
+                      key: inputStateKey,
+                      value: nextValue,
+                    })
                   }}
                   placeholder={asset.placeholder}
                   aria-label={asset.label ?? "Input"}
@@ -1793,10 +2694,30 @@ export default function ScoutPage() {
                       onCheckedChange={(checked: boolean) => {
                         if (!isPreviewMode) return
 
+                        const atMs = getNowMs()
+
                         setToggleValuesByKey((previous) => ({
                           ...previous,
                           [toggleKey]: checked,
                         }))
+
+                        setToggleTransitionCountByKey((previous) => ({
+                          ...previous,
+                          [toggleKey]: (previous[toggleKey] ?? 0) + 1,
+                        }))
+
+                        setToggleLastChangedAtByKey((previous) => ({
+                          ...previous,
+                          [toggleKey]: atMs,
+                        }))
+
+                        recordRuntimeEvent({
+                          type: "toggle-change",
+                          assetId: asset.id,
+                          key: toggleKey,
+                          atMs,
+                          value: checked,
+                        })
                       }}
                     />
                   </div>
@@ -1815,6 +2736,82 @@ export default function ScoutPage() {
                   ) : null}
                 </div>
               </div>
+            )
+          }
+
+          if (asset.type === "start-position") {
+            if (!isPreviewMode && asset.startPositionVisible === false) {
+              return null
+            }
+
+            if (isPreviewMode && hiddenStartPositionIds[asset.id]) {
+              return null
+            }
+
+            const selectedPoint = startPositionsByAssetId[asset.id]
+
+            return (
+              <div
+                key={asset.id ?? `start-position-${index}`}
+                className="absolute overflow-hidden rounded-md border border-emerald-300/55 bg-emerald-950/35 transition-all duration-150 ease-out"
+                style={sizedStyle}
+                onPointerDown={(event) => {
+                  if (!isPreviewMode) return
+                  handleStartPositionTap(asset, event)
+                }}
+              >
+                <div className="pointer-events-none absolute left-2 top-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-200/90">
+                  {asset.label ?? "Start Position"}
+                </div>
+
+                {selectedPoint ? (
+                  <div
+                    className="pointer-events-none absolute"
+                    style={{
+                      left: `${selectedPoint.xRatio * 100}%`,
+                      top: `${selectedPoint.yRatio * 100}%`,
+                      transform: "translate(-50%, -50%)",
+                    }}
+                  >
+                    <span className="absolute -left-4 -top-4 h-8 w-8 rounded-full border border-emerald-200/40 bg-emerald-300/10 animate-ping" />
+                    <span className="absolute -left-3 -top-3 h-6 w-6 rounded-full border border-emerald-200/70" />
+                    <span className="absolute -left-1.5 -top-1.5 h-3 w-3 rounded-full bg-emerald-300" />
+                  </div>
+                ) : (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-emerald-200/80">
+                    Tap to mark start
+                  </div>
+                )}
+              </div>
+            )
+          }
+
+          if (asset.type === "movement") {
+            const hasStageBadge = stageRootIds.has(asset.id)
+
+            return (
+              <Button
+                key={asset.id ?? `movement-${index}`}
+                type="button"
+                variant="outline"
+                className="group absolute rounded-lg border border-white/20 bg-slate-900/90 text-white transition-all duration-150 ease-out active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
+                style={sizedStyle}
+                onClick={() => handleMovementAssetClick(asset)}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  {movementSharedDirection === "left" ? (
+                    <LucideIcons.ArrowLeft className="h-4 w-4" />
+                  ) : (
+                    <LucideIcons.ArrowRight className="h-4 w-4" />
+                  )}
+                  <span>{asset.label ?? "Movement"}</span>
+                </span>
+                {hasStageBadge ? (
+                  <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
+                    <LucideIcons.ChevronDown className="h-3 w-3" />
+                  </span>
+                ) : null}
+              </Button>
             )
           }
 
@@ -1894,10 +2891,18 @@ export default function ScoutPage() {
                     variant="outline"
                     className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
                     onClick={() => {
+                      const nextValue = Math.max(0, currentMatchValue - 1)
                       setMatchValuesByKey((previous) => ({
                         ...previous,
-                        [matchKey]: Math.max(0, currentMatchValue - 1),
+                        [matchKey]: nextValue,
                       }))
+
+                      recordRuntimeEvent({
+                        type: "match-change",
+                        assetId: asset.id,
+                        key: matchKey,
+                        value: nextValue,
+                      })
                     }}
                   >
                     {asset.decrementText ?? "-"}
@@ -1943,10 +2948,18 @@ export default function ScoutPage() {
                     variant="outline"
                     className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
                     onClick={() => {
+                      const nextValue = currentMatchValue + 1
                       setMatchValuesByKey((previous) => ({
                         ...previous,
-                        [matchKey]: currentMatchValue + 1,
+                        [matchKey]: nextValue,
                       }))
+
+                      recordRuntimeEvent({
+                        type: "match-change",
+                        assetId: asset.id,
+                        key: matchKey,
+                        value: nextValue,
+                      })
                     }}
                   >
                     {asset.incrementText ?? "+"}
@@ -1974,7 +2987,18 @@ export default function ScoutPage() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start" className="w-56">
-                    <RadioGroup value={teamValue} onValueChange={setTeamValue}>
+                    <RadioGroup
+                      value={teamValue}
+                      onValueChange={(nextTeamValue) => {
+                        setTeamValue(nextTeamValue)
+                        recordRuntimeEvent({
+                          type: "team-select-change",
+                          assetId: asset.id,
+                          key: TEAM_SELECT_TAG,
+                          value: nextTeamValue,
+                        })
+                      }}
+                    >
                       {teamSelectOptions.map((option, optionIndex) => (
                         <label
                           key={`team-option-${option.value}-${optionIndex}`}
@@ -1996,7 +3020,10 @@ export default function ScoutPage() {
             )
           }
 
-          const hasStageBadge = Boolean(asset.stageParentTag)
+          const hasStageBadge = Boolean(asset.stageParentTag) || stageRootIds.has(asset.id)
+          const runtimeKey = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+          const isHoldMode = (asset.buttonPressMode ?? "tap") === "hold" && asset.buttonKind === "button"
+          const holdDurationMs = previewHoldDurationsById[asset.id]
           const isSwapButton = asset.buttonKind === "swap"
           const isSubmitButton = asset.buttonKind === "submit"
           const isResetButton = asset.buttonKind === "reset"
@@ -2024,6 +3051,10 @@ export default function ScoutPage() {
               )}
               style={sizedStyle}
               onClick={() => {
+                if (asset.buttonKind === "button" && handleStageToggle(asset)) {
+                  return
+                }
+
                 if (asset.buttonKind === "undo") {
                   handleUndo()
                   return
@@ -2035,7 +3066,9 @@ export default function ScoutPage() {
                 }
 
                 if (asset.buttonKind !== "submit" && asset.buttonKind !== "reset") {
-                  pushTagToStack(asset.tag, asset.increment ?? 1)
+                  if (!isHoldMode) {
+                    pushTagToStack(runtimeKey, asset.increment ?? 1, asset.id, runtimeKey)
+                  }
                 }
 
                 if (asset.buttonKind === "submit") {
@@ -2043,6 +3076,7 @@ export default function ScoutPage() {
                 }
 
                 if (asset.buttonKind === "reset") {
+                  stopAllActiveHolds()
                   setTagStack([])
                   setRedoTagStack([])
                   setTagStackActions([])
@@ -2051,6 +3085,16 @@ export default function ScoutPage() {
                   setTeamValue(TEAM_DEFAULT_VALUE)
                   setEditingMatchKey(null)
                   setEditingMatchDraft("")
+                  setRuntimeEvents([])
+                  setStartPositionsByAssetId({})
+                  setHiddenStartPositionIds({})
+                  setLockedStartPositionByAssetId({})
+                  setMovementToggleCount(0)
+                  setMovementPositionEvents([])
+                  setHoldStatsByKey({})
+                  setPreviewHoldDurationsById({})
+                  setToggleTransitionCountByKey({})
+                  setToggleLastChangedAtByKey({})
                   setToggleValuesByKey(
                     scoutAssets
                       .filter((candidate): candidate is ToggleSwitchAsset => candidate.type === "toggle-switch")
@@ -2064,11 +3108,29 @@ export default function ScoutPage() {
                         return accumulator
                       }, {})
                   )
+
+                  recordRuntimeEvent({ type: "reset" })
                 }
 
                 if (asset.buttonKind === "swap") {
                   handleSwapSides()
                 }
+              }}
+              onPointerDown={() => {
+                if (!isHoldMode) return
+                startHoldForAsset(asset)
+              }}
+              onPointerUp={() => {
+                if (!isHoldMode) return
+                stopHoldForAsset(asset.id, runtimeKey)
+              }}
+              onPointerCancel={() => {
+                if (!isHoldMode) return
+                stopHoldForAsset(asset.id, runtimeKey)
+              }}
+              onPointerLeave={() => {
+                if (!isHoldMode) return
+                stopHoldForAsset(asset.id, runtimeKey)
               }}
             >
               {asset.buttonKind === "undo" ? (
@@ -2087,6 +3149,11 @@ export default function ScoutPage() {
               {hasStageBadge ? (
                 <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
                   <LucideIcons.ChevronDown className="h-3 w-3" />
+                </span>
+              ) : null}
+              {isHoldMode && typeof holdDurationMs === "number" ? (
+                <span className="pointer-events-none absolute -bottom-5 left-1/2 -translate-x-1/2 rounded bg-slate-900/95 px-1.5 py-0.5 text-[10px] text-white/90">
+                  {(holdDurationMs / 1000).toFixed(2)}
                 </span>
               ) : null}
             </Button>
