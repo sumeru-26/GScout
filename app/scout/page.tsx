@@ -280,6 +280,14 @@ function toPercentFromScale(value: number) {
   return ((value + 100) / 200) * 100
 }
 
+function toXScaleFromRatio(ratio: number) {
+  return clampPositionScale(ratio * 200 - 100)
+}
+
+function toYScaleFromRatio(ratio: number) {
+  return clampPositionScale(100 - ratio * 200)
+}
+
 function toSizePercentFromScale(value: number) {
   return value
 }
@@ -1220,6 +1228,7 @@ export default function ScoutPage() {
   const [previewHoldDurationsById, setPreviewHoldDurationsById] = useState<Record<string, number>>({})
   const [holdStatsByKey, setHoldStatsByKey] = useState<Record<string, HoldStats>>({})
   const holdStartByAssetIdRef = useRef<Record<string, number>>({})
+  const holdKeyByAssetIdRef = useRef<Record<string, string>>({})
   const holdIntervalRef = useRef<number | null>(null)
   const [startPositionsByAssetId, setStartPositionsByAssetId] = useState<
     Record<string, { xRatio: number; yRatio: number; selectedAtMs: number }>
@@ -1261,12 +1270,18 @@ export default function ScoutPage() {
       const activeStart = holdStartByAssetIdRef.current[assetId]
       if (typeof activeStart !== "number") return
 
+      const activeKey = holdKeyByAssetIdRef.current[assetId] ?? key
+
       const endMs = getNowMs()
       const durationMs = Math.max(0, endMs - activeStart)
 
       const nextStarts = { ...holdStartByAssetIdRef.current }
       delete nextStarts[assetId]
       holdStartByAssetIdRef.current = nextStarts
+
+      const nextKeys = { ...holdKeyByAssetIdRef.current }
+      delete nextKeys[assetId]
+      holdKeyByAssetIdRef.current = nextKeys
 
       setPreviewHoldDurationsById((previous) => {
         if (!(assetId in previous)) return previous
@@ -1277,12 +1292,12 @@ export default function ScoutPage() {
       })
 
       setHoldStatsByKey((previous) => {
-        const existing = previous[key]
+        const existing = previous[activeKey]
 
         if (!existing) {
           return {
             ...previous,
-            [key]: {
+            [activeKey]: {
               assetId,
               mode: "hold",
               totalMs: durationMs,
@@ -1300,7 +1315,7 @@ export default function ScoutPage() {
 
         return {
           ...previous,
-          [key]: {
+          [activeKey]: {
             ...existing,
             totalMs: existing.totalMs + durationMs,
             pressCount: existing.pressCount + 1,
@@ -1319,7 +1334,7 @@ export default function ScoutPage() {
       recordRuntimeEvent({
         type: "hold-end",
         assetId,
-        key,
+        key: activeKey,
         atMs: endMs,
         durationMs,
       })
@@ -1471,14 +1486,35 @@ export default function ScoutPage() {
     return getContainedBounds(containerSize, backgroundImageSize)
   }, [backgroundImage, backgroundImageSize, containerSize])
 
+  const stageBlurRootId = useMemo(() => {
+    if (!previewStageParentId) return null
+
+    const stageRoot = scoutAssets.find((asset) => asset.id === previewStageParentId)
+    if (!stageRoot || !isStageableAsset(stageRoot) || !stageRoot.stageBlurBackgroundOnClick) {
+      return null
+    }
+
+    return stageRoot.id
+  }, [previewStageParentId, scoutAssets])
+
   const getAssetStyle = useCallback(
-    (asset: { x: number; y: number; width: number; height: number }, includeHeight: boolean) => {
+    (
+      asset: { id?: string; stageParentId?: string; x: number; y: number; width: number; height: number },
+      includeHeight: boolean
+    ) => {
+      const stageZIndex = stageBlurRootId
+        ? asset.id === stageBlurRootId || asset.stageParentId === stageBlurRootId
+          ? 20
+          : 5
+        : undefined
+
       if (!measuredFieldBounds) {
         const percentBaseStyle = {
           left: `${toPercentFromScale(asset.x)}%`,
           top: `${100 - toPercentFromScale(asset.y)}%`,
           width: `${toSizePercentFromScale(asset.width)}%`,
           transform: "translate(-50%, -50%)",
+          zIndex: stageZIndex,
         }
 
         if (!includeHeight) {
@@ -1501,6 +1537,7 @@ export default function ScoutPage() {
         top: measuredFieldBounds.top + measuredFieldBounds.height * yPercent,
         width: measuredFieldBounds.width * widthPercent,
         transform: "translate(-50%, -50%)",
+        zIndex: stageZIndex,
       }
 
       if (!includeHeight) {
@@ -1512,7 +1549,7 @@ export default function ScoutPage() {
         height: measuredFieldBounds.height * heightPercent,
       }
     },
-    [measuredFieldBounds]
+    [measuredFieldBounds, stageBlurRootId]
   )
 
   const displayedAssets = useMemo(() => {
@@ -1673,6 +1710,44 @@ export default function ScoutPage() {
     [visibleAssets]
   )
 
+  const movementStatsByKey = useMemo(() => {
+    const nowMs = getNowMs()
+    const sortedMovementEvents = runtimeEvents
+      .filter((event): event is RuntimeActionEvent & { key: string } => {
+        return event.type === "movement-toggle" && typeof event.key === "string" && event.key.trim().length > 0
+      })
+      .slice()
+      .sort((left, right) => left.atMs - right.atMs)
+
+    const statsByKey: Record<string, { toggleCount: number; totalMs: number; lastDirection: string }> = {}
+
+    sortedMovementEvents.forEach((event) => {
+      const key = event.key.trim()
+      const existing = statsByKey[key] ?? { toggleCount: 0, totalMs: 0, lastDirection: movementSharedDirection }
+      const lastToggleAtMs = (existing as { lastToggleAtMs?: number }).lastToggleAtMs
+
+      if (typeof lastToggleAtMs === "number") {
+        existing.totalMs += Math.max(0, event.atMs - lastToggleAtMs)
+      }
+
+      ;(existing as { lastToggleAtMs?: number }).lastToggleAtMs = event.atMs
+      existing.toggleCount += 1
+      existing.lastDirection = typeof event.value === "string" ? event.value : existing.lastDirection
+
+      statsByKey[key] = existing
+    })
+
+    Object.values(statsByKey).forEach((stats) => {
+      const lastToggleAtMs = (stats as { lastToggleAtMs?: number }).lastToggleAtMs
+      if (typeof lastToggleAtMs === "number") {
+        stats.totalMs += Math.max(0, nowMs - lastToggleAtMs)
+      }
+      delete (stats as { lastToggleAtMs?: number }).lastToggleAtMs
+    })
+
+    return statsByKey
+  }, [getNowMs, movementSharedDirection, runtimeEvents])
+
   const stageRootIds = useMemo(
     () =>
       new Set(
@@ -1731,6 +1806,7 @@ export default function ScoutPage() {
     setHoldStatsByKey({})
     setPreviewHoldDurationsById({})
     holdStartByAssetIdRef.current = {}
+    holdKeyByAssetIdRef.current = {}
     clearHoldInterval()
   }, [clearHoldInterval, scoutAssets])
 
@@ -1958,13 +2034,18 @@ export default function ScoutPage() {
       const pressMode = asset.buttonPressMode ?? "tap"
       if (pressMode !== "hold") return
 
-      const key = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+      const runtimeKey = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+      const key = toModePrefixedTag(runtimeKey, controlMode)
       if (typeof holdStartByAssetIdRef.current[asset.id] === "number") return
 
       const startMs = getNowMs()
       holdStartByAssetIdRef.current = {
         ...holdStartByAssetIdRef.current,
         [asset.id]: startMs,
+      }
+      holdKeyByAssetIdRef.current = {
+        ...holdKeyByAssetIdRef.current,
+        [asset.id]: key,
       }
 
       setPreviewHoldDurationsById((previous) => ({
@@ -2011,7 +2092,7 @@ export default function ScoutPage() {
         })
       }, 25)
     },
-    [clearHoldInterval, getNowMs, recordRuntimeEvent]
+    [clearHoldInterval, controlMode, getNowMs, recordRuntimeEvent]
   )
 
   const handleMovementAssetClick = useCallback(
@@ -2020,7 +2101,8 @@ export default function ScoutPage() {
 
       setMovementSharedDirection((previous) => {
         const nextDirection = previous === "left" ? "right" : "left"
-        const key = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+        const runtimeKey = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+        const key = toModePrefixedTag(runtimeKey, controlMode)
 
         setMovementToggleCount((count) => count + 1)
         setMovementPositionEvents((previousEvents) => [
@@ -2046,7 +2128,7 @@ export default function ScoutPage() {
         return nextDirection
       })
     },
-    [getNowMs, handleStageToggle, recordRuntimeEvent]
+    [controlMode, getNowMs, handleStageToggle, recordRuntimeEvent]
   )
 
   const handleStartPositionTap = useCallback(
@@ -2191,135 +2273,36 @@ export default function ScoutPage() {
       output[tag] = toggleValuesByKey[tag] ?? false
     })
 
+    Object.entries(holdStatsByKey).forEach(([key, stats]) => {
+      output[key] = Math.round(stats.totalMs)
+    })
+
+    Object.entries(movementStatsByKey).forEach(([key, stats]) => {
+      output[`${key}.movementMs`] = Math.round(stats.totalMs)
+      output[`${key}.movementToggles`] = stats.toggleCount
+    })
+
+    const latestStartPosition = Object.values(startPositionsByAssetId).reduce<
+      { xRatio: number; yRatio: number; selectedAtMs: number } | null
+    >((latest, candidate) => {
+      if (!latest) return candidate
+      return candidate.selectedAtMs > latest.selectedAtMs ? candidate : latest
+    }, null)
+
+    if (latestStartPosition) {
+      output["start.x"] = Number(toXScaleFromRatio(latestStartPosition.xRatio).toFixed(2))
+      output["start.y"] = Number(toYScaleFromRatio(latestStartPosition.yRatio).toFixed(2))
+    }
+
     output.match = selectedMatchNumber ?? 0
     output.team = teamValue
     output.scouter = scouterName
 
-    const buttonSummary = scoutAssets
-      .filter(
-        (asset): asset is ButtonAsset | IconButtonAsset =>
-          (asset.type === "button" || asset.type === "icon-button") &&
-          typeof asset.tag === "string" &&
-          asset.tag.trim().length > 0
-      )
-      .reduce<Record<string, Record<string, unknown>>>((accumulator, asset) => {
-        const key = normalizeRuntimeTag(getAssetRuntimeKey(asset))
-        const mode = asset.buttonPressMode ?? "tap"
-
-        if (mode === "hold") {
-          const holdStats = holdStatsByKey[key]
-          accumulator[key] = {
-            assetId: asset.id,
-            mode: "hold",
-            hold: {
-              totalMs: holdStats?.totalMs ?? 0,
-              pressCount: holdStats?.pressCount ?? 0,
-              segments: holdStats?.segments ?? [],
-            },
-          }
-          return accumulator
-        }
-
-        const normalizedTag = stripModePrefix(key)
-        const autoCount = tagStack.filter((stackTag) => stackTag === `auto.${normalizedTag}`).length
-        const teleopCount = tagStack.filter((stackTag) => stackTag === `teleop.${normalizedTag}`).length
-        const tapCount = autoCount + teleopCount
-
-        accumulator[key] = {
-          assetId: asset.id,
-          mode: "tap",
-          tapCount,
-          value: tapCount * Math.max(1, asset.increment ?? 1),
-          lastTapMs: (() => {
-            const tapEvents = runtimeEvents.filter(
-              (event) => event.type === "tap" && event.assetId === asset.id
-            )
-            const lastTapEvent = tapEvents[tapEvents.length - 1]
-            return lastTapEvent?.atMs ?? null
-          })(),
-        }
-
-        return accumulator
-      }, {})
-
-    const startPositionSummary = scoutAssets
-      .filter((asset): asset is StartPositionAsset => asset.type === "start-position")
-      .reduce<Record<string, Record<string, unknown>>>((accumulator, asset) => {
-        const key = normalizeRuntimeTag(getAssetRuntimeKey(asset))
-        const selected = startPositionsByAssetId[asset.id]
-        const locked = lockedStartPositionByAssetId[asset.id]
-
-        accumulator[key] = {
-          assetId: asset.id,
-          key,
-          selected: Boolean(selected),
-          xRatio: selected?.xRatio ?? null,
-          yRatio: selected?.yRatio ?? null,
-          xPercent: typeof selected?.xRatio === "number" ? Math.round(selected.xRatio * 100) : null,
-          yPercent: typeof selected?.yRatio === "number" ? Math.round(selected.yRatio * 100) : null,
-          selectedAtMs: selected?.selectedAtMs ?? null,
-          lockedOnAutoStart: Boolean(locked),
-          lockedAtMs: locked?.lockedAtMs ?? null,
-          lockedXRatio: locked?.xRatio ?? null,
-          lockedYRatio: locked?.yRatio ?? null,
-        }
-
-        return accumulator
-      }, {})
-
-    const togglesSummary = uniqueToggleTags.reduce<Record<string, Record<string, unknown>>>((accumulator, tag) => {
-      accumulator[tag] = {
-        value: toggleValuesByKey[tag] ?? false,
-        transitionCount: toggleTransitionCountByKey[tag] ?? 0,
-        lastChangedAtMs: toggleLastChangedAtByKey[tag] ?? null,
-      }
-      return accumulator
-    }, {})
-
-    const movementHistory = runtimeEvents
-      .filter((event) => event.type === "movement-toggle")
-      .map((event) => ({ atMs: event.atMs, direction: event.value }))
-
-    const movementSummary = {
-      sharedDirection: movementSharedDirection,
-      toggleCount: movementToggleCount,
-      history: movementHistory,
-      positionEvents: movementPositionEvents,
-    }
-
-    const inputsSummary = {
-      ...uniqueInputTags.reduce<Record<string, string>>((accumulator, tag) => {
-        accumulator[tag] = inputValuesByKey[tag] ?? ""
-        return accumulator
-      }, {}),
-      team: teamValue,
-      match: selectedMatchNumber ?? 0,
-      scouter: scouterName,
-    }
-
     const payloadObject = {
-      version: 1,
-      eventKey,
-      team: teamValue,
-      match: selectedMatchNumber ?? 0,
-      scouter: scouterName,
-      startedAt: new Date(sessionStartedAtMs).toISOString(),
-      submittedAt: new Date().toISOString(),
-      matchData: {
-        startPosition: startPositionSummary,
-        buttons: buttonSummary,
-        movement: movementSummary,
-        toggles: togglesSummary,
-        inputs: inputsSummary,
-        meta: {
-          controlMode,
-          swapped: isSwapped,
-          autoTimerRemainingMs,
-        },
-      },
-      events: runtimeEvents,
-      legacy: output,
       ...output,
+      match: selectedMatchNumber ?? 0,
+      team: teamValue,
+      scouter: scouterName,
     }
 
     const payloadJson = JSON.stringify(payloadObject)
@@ -2340,26 +2323,15 @@ export default function ScoutPage() {
     console.log("[ScoutPage] submit payload:", payloadObject)
   }, [
     TEAM_SELECT_TAG,
-    autoTimerRemainingMs,
-    controlMode,
-    eventKey,
-    holdStatsByKey,
     inputValuesByKey,
-    isSwapped,
-    lockedStartPositionByAssetId,
-    movementPositionEvents,
-    movementSharedDirection,
-    movementToggleCount,
-    runtimeEvents,
     scoutAssets,
     scouterName,
     selectedMatchNumber,
-    sessionStartedAtMs,
     startPositionsByAssetId,
     tagStack,
     teamValue,
-    toggleLastChangedAtByKey,
-    toggleTransitionCountByKey,
+    holdStatsByKey,
+    movementStatsByKey,
     toggleValuesByKey,
     stopAllActiveHolds,
   ])
@@ -2528,6 +2500,7 @@ export default function ScoutPage() {
             const runtimeKey = normalizeRuntimeTag(getAssetRuntimeKey(asset))
             const isHoldMode = (asset.buttonPressMode ?? "tap") === "hold"
             const holdDurationMs = previewHoldDurationsById[asset.id]
+            const showHoldTimer = isHoldMode && typeof holdDurationMs === "number"
 
             return (
               <Button
@@ -2546,21 +2519,20 @@ export default function ScoutPage() {
                 onPointerCancel={() => stopHoldForAsset(asset.id, runtimeKey)}
                 onPointerLeave={() => stopHoldForAsset(asset.id, runtimeKey)}
               >
-                <Icon
-                  className="h-5 w-5"
-                  style={{
-                    stroke: asset.outlineColor ?? "currentColor",
-                    fill: asset.fillColor ?? "none",
-                  }}
-                />
+                {showHoldTimer ? (
+                  <span className="font-mono text-xs tabular-nums">{(holdDurationMs / 1000).toFixed(2)}s</span>
+                ) : (
+                  <Icon
+                    className="h-5 w-5"
+                    style={{
+                      stroke: asset.outlineColor ?? "currentColor",
+                      fill: asset.fillColor ?? "none",
+                    }}
+                  />
+                )}
                 {hasStageBadge ? (
                   <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
                     <LucideIcons.ChevronDown className="h-3 w-3" />
-                  </span>
-                ) : null}
-                {isHoldMode && typeof holdDurationMs === "number" ? (
-                  <span className="pointer-events-none absolute -bottom-5 left-1/2 -translate-x-1/2 rounded bg-slate-900/95 px-1.5 py-0.5 text-[10px] text-white/90">
-                    {(holdDurationMs / 1000).toFixed(2)}
                   </span>
                 ) : null}
               </Button>
@@ -2844,9 +2816,34 @@ export default function ScoutPage() {
               }
             }
 
-            const visibleLogEntries = orderedTagsByMostRecent
-              .slice(0, visibleLineCount)
-              .map((stackTag) => `${stackTag}: ${tagCounts.get(stackTag) ?? 0}`)
+            const visibleLogEntries = orderedTagsByMostRecent.map((stackTag) => {
+              const holdMs = holdStatsByKey[stackTag]?.totalMs ?? 0
+              const holdSuffix = holdMs > 0 ? ` | hold ${(holdMs / 1000).toFixed(2)}s` : ""
+              return `${stackTag}: ${tagCounts.get(stackTag) ?? 0}${holdSuffix}`
+            })
+
+            const holdOnlyEntries = Object.entries(holdStatsByKey)
+              .filter(([, stats]) => stats.totalMs > 0)
+              .sort(([, left], [, right]) => {
+                const leftMostRecent = left.segments[left.segments.length - 1]?.endMs ?? 0
+                const rightMostRecent = right.segments[right.segments.length - 1]?.endMs ?? 0
+                return rightMostRecent - leftMostRecent
+              })
+              .filter(([key]) => !tagCounts.has(key))
+              .map(([key, stats]) => `${key}: hold ${(stats.totalMs / 1000).toFixed(2)}s`)
+
+            const movementEntries = Object.entries(movementStatsByKey)
+              .filter(([, stats]) => stats.toggleCount > 0 || stats.totalMs > 0)
+              .sort(([, left], [, right]) => right.totalMs - left.totalMs)
+              .map(
+                ([key, stats]) =>
+                  `${key}: move ${(stats.totalMs / 1000).toFixed(2)}s | toggles ${stats.toggleCount}`
+              )
+
+            const limitedLogEntries = [...visibleLogEntries, ...holdOnlyEntries, ...movementEntries].slice(
+              0,
+              visibleLineCount
+            )
 
             return (
               <div
@@ -2862,8 +2859,8 @@ export default function ScoutPage() {
                   }}
                 >
                   <pre className="whitespace-pre-wrap break-words font-sans">
-                    {visibleLogEntries.length > 0
-                      ? visibleLogEntries.join("\n")
+                    {limitedLogEntries.length > 0
+                      ? limitedLogEntries.join("\n")
                       : "No tags logged yet."}
                   </pre>
                 </div>
@@ -3024,6 +3021,8 @@ export default function ScoutPage() {
           const runtimeKey = normalizeRuntimeTag(getAssetRuntimeKey(asset))
           const isHoldMode = (asset.buttonPressMode ?? "tap") === "hold" && asset.buttonKind === "button"
           const holdDurationMs = previewHoldDurationsById[asset.id]
+          const holdContent =
+            isHoldMode && typeof holdDurationMs === "number" ? `${(holdDurationMs / 1000).toFixed(2)}s` : null
           const isSwapButton = asset.buttonKind === "swap"
           const isSubmitButton = asset.buttonKind === "submit"
           const isResetButton = asset.buttonKind === "reset"
@@ -3076,6 +3075,13 @@ export default function ScoutPage() {
                 }
 
                 if (asset.buttonKind === "reset") {
+                  const shouldReset = window.confirm(
+                    "Reset all scouting data for this match? This cannot be undone."
+                  )
+                  if (!shouldReset) {
+                    return
+                  }
+
                   stopAllActiveHolds()
                   setTagStack([])
                   setRedoTagStack([])
@@ -3144,16 +3150,11 @@ export default function ScoutPage() {
                   <span>Redo</span>
                 </span>
               ) : (
-                asset.text ?? "Button"
+                holdContent ?? asset.text ?? "Button"
               )}
               {hasStageBadge ? (
                 <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
                   <LucideIcons.ChevronDown className="h-3 w-3" />
-                </span>
-              ) : null}
-              {isHoldMode && typeof holdDurationMs === "number" ? (
-                <span className="pointer-events-none absolute -bottom-5 left-1/2 -translate-x-1/2 rounded bg-slate-900/95 px-1.5 py-0.5 text-[10px] text-white/90">
-                  {(holdDurationMs / 1000).toFixed(2)}
                 </span>
               ) : null}
             </Button>
