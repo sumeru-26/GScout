@@ -67,6 +67,23 @@ type IconButtonAsset = {
   fillColor?: string
 }
 
+type ButtonSliderAsset = {
+  id: string
+  type: "button-slider"
+  tag?: string
+  stageParentId?: string
+  x: number
+  y: number
+  width: number
+  height: number
+  label?: string
+  iconName?: string
+  outlineColor?: string
+  fillColor?: string
+  increaseDirection: "left" | "right"
+  buttonSliderDisplayMode?: "label" | "icon"
+}
+
 type CoverAsset = {
   id: string
   type: "cover"
@@ -88,6 +105,7 @@ type InputAsset = {
   height: number
   placeholder?: string
   label?: string
+  multiline?: boolean
 }
 
 type AutoToggleAsset = {
@@ -236,9 +254,18 @@ type BoxBounds = {
   height: number
 }
 
+type ButtonSliderDragInfo = {
+  startX: number
+  currentX: number
+  signedDistance: number
+  buttonLeft: number
+  buttonWidth: number
+}
+
 type ScoutAsset =
   | ButtonAsset
   | IconButtonAsset
+  | ButtonSliderAsset
   | CoverAsset
   | InputAsset
   | AutoToggleAsset
@@ -253,6 +280,12 @@ type ControlMode = "auto" | "teleop"
 const AUTO_TIMER_DURATION_MS = 25_000
 const TOGGLE_SIZE = { width: 52, height: 28 } as const
 const LOG_SIZE = { width: 280, height: 120 } as const
+const BUTTON_SLIDER_DRAG_DEADZONE_PX = 6
+const BUTTON_SLIDER_MIN_SPEED_PER_SECOND = 0.7
+const BUTTON_SLIDER_MAX_SPEED_PER_SECOND = 24
+const BUTTON_SLIDER_DISTANCE_TO_MAX_SPEED_PX = 880
+const BUTTON_SLIDER_SPEED_CURVE_EXPONENT = 1.6
+const BUTTON_SLIDER_SPEED_SMOOTHING = 0.18
 
 type FullscreenDocument = Document & {
   webkitFullscreenElement?: Element | null
@@ -371,7 +404,10 @@ function normalizeCoverKind(value: unknown): value is "cover" {
 }
 
 function normalizeInputKind(value: unknown): value is "input" {
-  return typeof value === "string" && value.toLowerCase() === "input"
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return normalized === "input" || normalized === "text-input" || normalized === "textinput" || normalized === "text_input"
 }
 
 function normalizeAutoToggleKind(value: unknown): value is "auto-toggle" {
@@ -415,6 +451,11 @@ function normalizePressMode(value: unknown): "tap" | "hold" {
 function normalizeMovementDirection(value: unknown): "left" | "right" {
   if (typeof value !== "string") return "left"
   return value.trim().toLowerCase() === "right" ? "right" : "left"
+}
+
+function normalizeIncreaseDirection(value: unknown): "left" | "right" {
+  if (typeof value !== "string") return "right"
+  return value.trim().toLowerCase() === "left" ? "left" : "right"
 }
 
 function parseStageParentId(item: Record<string, unknown>): string | undefined {
@@ -705,6 +746,35 @@ function normalizeIconButtonKind(value: unknown): value is "icon-button" {
   )
 }
 
+function normalizeButtonSliderKind(value: unknown): value is "button-slider" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return (
+    normalized === "button-slider" ||
+    normalized === "buttonslider" ||
+    normalized === "button_slider"
+  )
+}
+
+function getButtonSliderSpeedPerSecond(distancePx: number) {
+  const clampedDistance = Math.max(0, Math.min(BUTTON_SLIDER_DISTANCE_TO_MAX_SPEED_PX, distancePx))
+  const normalizedDistance = clampedDistance / BUTTON_SLIDER_DISTANCE_TO_MAX_SPEED_PX
+  const curvedDistance = Math.pow(normalizedDistance, BUTTON_SLIDER_SPEED_CURVE_EXPONENT)
+  return (
+    BUTTON_SLIDER_MIN_SPEED_PER_SECOND +
+    (BUTTON_SLIDER_MAX_SPEED_PER_SECOND - BUTTON_SLIDER_MIN_SPEED_PER_SECOND) * curvedDistance
+  )
+}
+
+function normalizeButtonSliderDisplayMode(value: unknown): "label" | "icon" | undefined {
+  if (typeof value !== "string") return undefined
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "label" || normalized === "text") return "label"
+  if (normalized === "icon") return "icon"
+  return undefined
+}
+
 function toLucideExportName(iconName: string) {
   return iconName
     .trim()
@@ -869,6 +939,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeMovementKind(item.type) ||
         normalizeMovementKind(item.kind) ||
         normalizeMovementKind(item.key) ||
+        normalizeButtonSliderKind(item.type) ||
+        normalizeButtonSliderKind(item.kind) ||
+        normalizeButtonSliderKind(item.key) ||
         normalizeIconButtonKind(item.type) ||
         normalizeIconButtonKind(item.kind) ||
         isTeamSelectAsset(item)
@@ -912,6 +985,10 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeMovementKind(item.type) ||
         normalizeMovementKind(item.kind) ||
         normalizeMovementKind(item.key)
+      const isButtonSlider =
+        normalizeButtonSliderKind(item.type) ||
+        normalizeButtonSliderKind(item.kind) ||
+        normalizeButtonSliderKind(item.key)
       const isTeamSelect = isTeamSelectAsset(item)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
       const actionButtonKind = normalizeActionButtonKind(item.type)
@@ -937,6 +1014,11 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
       }
 
       if (isInput) {
+        const parsedMultiline =
+          parseStageFlag(item.multiline) ||
+          parseStageFlag(item.inputIsTextArea) ||
+          parseStageFlag(item.input_is_text_area)
+
         return {
           id,
           type: "input",
@@ -954,6 +1036,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
             typeof item.label === "string" && item.label.trim().length > 0
               ? item.label
               : undefined,
+          multiline: parsedMultiline,
         } satisfies InputAsset
       }
 
@@ -1107,6 +1190,49 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         } satisfies MatchSelectAsset
       }
 
+      if (isButtonSlider) {
+        return {
+          id,
+          type: "button-slider",
+          tag: parseAssetTag(item),
+          stageParentId,
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label.trim()
+              : typeof item.text === "string" && item.text.trim().length > 0
+                ? item.text.trim()
+                : "Button Slider",
+          iconName:
+            typeof item.iconName === "string" && item.iconName.trim().length > 0
+              ? item.iconName.trim().toLowerCase()
+              : typeof item.icon === "string" && item.icon.trim().length > 0
+                ? item.icon.trim().toLowerCase()
+              : undefined,
+          outlineColor:
+            typeof item.outlineColor === "string" && item.outlineColor.trim().length > 0
+              ? item.outlineColor
+              : typeof item.outline === "string" && item.outline.trim().length > 0
+                ? item.outline
+              : undefined,
+          fillColor:
+            typeof item.fillColor === "string" && item.fillColor.trim().length > 0
+              ? item.fillColor
+              : typeof item.fill === "string" && item.fill.trim().length > 0
+                ? item.fill
+              : undefined,
+          increaseDirection: normalizeIncreaseDirection(
+            item.increaseDirection ?? item.buttonSliderIncreaseDirection ?? item.button_slider_increase_direction
+          ),
+          buttonSliderDisplayMode:
+            normalizeButtonSliderDisplayMode(item.buttonSliderDisplayMode) ??
+            normalizeButtonSliderDisplayMode(item.displayMode),
+        } satisfies ButtonSliderAsset
+      }
+
       if (isIconButton) {
         return {
           id,
@@ -1213,6 +1339,7 @@ export default function ScoutPage() {
   const [editingMatchKey, setEditingMatchKey] = useState<string | null>(null)
   const [editingMatchDraft, setEditingMatchDraft] = useState<string>("")
   const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false)
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
   const [eventKey, setEventKey] = useState<string>("")
@@ -1226,7 +1353,18 @@ export default function ScoutPage() {
   const [previewStageParentId, setPreviewStageParentId] = useState<string | null>(null)
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeActionEvent[]>([])
   const [previewHoldDurationsById, setPreviewHoldDurationsById] = useState<Record<string, number>>({})
+  const [previewButtonSliderValues, setPreviewButtonSliderValues] = useState<Record<string, number>>({})
+  const [previewButtonSliderDragById, setPreviewButtonSliderDragById] = useState<
+    Record<string, ButtonSliderDragInfo>
+  >({})
+  const [previewButtonSliderSpeedById, setPreviewButtonSliderSpeedById] = useState<Record<string, number>>({})
+  const [previewTagStacks, setPreviewTagStacks] = useState<Record<string, number[]>>({})
   const [holdStatsByKey, setHoldStatsByKey] = useState<Record<string, HoldStats>>({})
+  const previewButtonSliderAnimationFramesRef = useRef<Record<string, number>>({})
+  const previewButtonSliderLoopStateRef = useRef<
+    Record<string, { lastFrameMs: number; accumulator: number; smoothedRatePerSecond: number; increaseSign: number }>
+  >({})
+  const previewButtonSliderDragByIdRef = useRef<Record<string, ButtonSliderDragInfo>>({})
   const holdStartByAssetIdRef = useRef<Record<string, number>>({})
   const holdKeyByAssetIdRef = useRef<Record<string, string>>({})
   const holdIntervalRef = useRef<number | null>(null)
@@ -1698,6 +1836,7 @@ export default function ScoutPage() {
         (asset): asset is
           | ButtonAsset
           | IconButtonAsset
+          | ButtonSliderAsset
           | InputAsset
           | AutoToggleAsset
           | ToggleSwitchAsset
@@ -1803,6 +1942,16 @@ export default function ScoutPage() {
     setHiddenStartPositionIds({})
     setLockedStartPositionByAssetId({})
     setRuntimeEvents([])
+    setPreviewButtonSliderValues({})
+    setPreviewButtonSliderDragById({})
+    setPreviewButtonSliderSpeedById({})
+    setPreviewTagStacks({})
+    Object.values(previewButtonSliderAnimationFramesRef.current).forEach((frameId) => {
+      window.cancelAnimationFrame(frameId)
+    })
+    previewButtonSliderAnimationFramesRef.current = {}
+    previewButtonSliderLoopStateRef.current = {}
+    previewButtonSliderDragByIdRef.current = {}
     setHoldStatsByKey({})
     setPreviewHoldDurationsById({})
     holdStartByAssetIdRef.current = {}
@@ -1816,7 +1965,18 @@ export default function ScoutPage() {
     setPreviewStageParentId(null)
   }, [previewStageParentId, scoutAssets])
 
-  useEffect(() => () => clearHoldInterval(), [clearHoldInterval])
+  useEffect(
+    () => () => {
+      clearHoldInterval()
+      Object.values(previewButtonSliderAnimationFramesRef.current).forEach((frameId) => {
+        window.cancelAnimationFrame(frameId)
+      })
+      previewButtonSliderAnimationFramesRef.current = {}
+      previewButtonSliderLoopStateRef.current = {}
+      previewButtonSliderDragByIdRef.current = {}
+    },
+    [clearHoldInterval]
+  )
 
   const startEditingMatchValue = useCallback((matchKey: string, currentValue: number) => {
     setEditingMatchKey(matchKey)
@@ -1972,8 +2132,7 @@ export default function ScoutPage() {
   const handleSwapSides = useCallback(() => {
     if (!mirrorLine) return
     setIsSwapped((previous) => !previous)
-    recordRuntimeEvent({ type: "swap-sides", value: !isSwapped })
-  }, [isSwapped, mirrorLine, recordRuntimeEvent])
+  }, [mirrorLine])
 
   const pushTagToStack = useCallback((tag?: string, increment = 1, assetId?: string, rawTag?: string) => {
     if (!tag || tag.trim().length === 0) return
@@ -2005,6 +2164,215 @@ export default function ScoutPage() {
       valueDelta: repeatCount,
     })
   }, [controlMode, getNowMs, recordRuntimeEvent])
+
+  const commitSliderValueToTagStack = useCallback((asset: ButtonSliderAsset, value: number) => {
+    const normalizedTag =
+      typeof asset.tag === "string" && asset.tag.trim().length > 0
+        ? normalizeRuntimeTag(asset.tag)
+        : ""
+    if (!normalizedTag || value <= 0) return
+
+    setPreviewTagStacks((previous) => ({
+      ...previous,
+      [normalizedTag]: [...(previous[normalizedTag] ?? []), value],
+    }))
+  }, [])
+
+  const runPreviewButtonSliderFrame = useCallback((itemId: string, frameTimeMs: number) => {
+    const drag = previewButtonSliderDragByIdRef.current[itemId]
+    const loopState = previewButtonSliderLoopStateRef.current[itemId]
+
+    if (!drag || !loopState) {
+      delete previewButtonSliderAnimationFramesRef.current[itemId]
+      return
+    }
+
+    const elapsedMs = Math.max(0, Math.min(80, frameTimeMs - loopState.lastFrameMs))
+    loopState.lastFrameMs = frameTimeMs
+
+    const absoluteDistance = Math.abs(drag.signedDistance)
+    const hasDirection = absoluteDistance >= BUTTON_SLIDER_DRAG_DEADZONE_PX
+    const direction = hasDirection ? (drag.signedDistance > 0 ? 1 : -1) : 0
+    const targetRatePerSecond = hasDirection
+      ? getButtonSliderSpeedPerSecond(absoluteDistance) * direction * loopState.increaseSign
+      : 0
+
+    const smoothedRatePerSecond =
+      loopState.smoothedRatePerSecond +
+      (targetRatePerSecond - loopState.smoothedRatePerSecond) * BUTTON_SLIDER_SPEED_SMOOTHING
+
+    loopState.smoothedRatePerSecond = smoothedRatePerSecond
+
+    setPreviewButtonSliderSpeedById((previous) => ({
+      ...previous,
+      [itemId]: smoothedRatePerSecond,
+    }))
+
+    if (elapsedMs > 0) {
+      loopState.accumulator += (smoothedRatePerSecond * elapsedMs) / 1000
+
+      let wholeStepDelta = 0
+      if (loopState.accumulator >= 1) {
+        wholeStepDelta = Math.floor(loopState.accumulator)
+        loopState.accumulator -= wholeStepDelta
+      } else if (loopState.accumulator <= -1) {
+        wholeStepDelta = -Math.floor(-loopState.accumulator)
+        loopState.accumulator -= wholeStepDelta
+      }
+
+      if (wholeStepDelta !== 0) {
+        setPreviewButtonSliderValues((previous) => ({
+          ...previous,
+          [itemId]: Math.max(0, (previous[itemId] ?? 0) + wholeStepDelta),
+        }))
+      }
+    }
+
+    previewButtonSliderAnimationFramesRef.current[itemId] = window.requestAnimationFrame((nextFrameMs) => {
+      runPreviewButtonSliderFrame(itemId, nextFrameMs)
+    })
+  }, [])
+
+  const startPreviewButtonSliderLoop = useCallback(
+    (itemId: string, increaseSign: number) => {
+      if (typeof previewButtonSliderAnimationFramesRef.current[itemId] === "number") return
+
+      previewButtonSliderLoopStateRef.current = {
+        ...previewButtonSliderLoopStateRef.current,
+        [itemId]: {
+          lastFrameMs: performance.now(),
+          accumulator: 0,
+          smoothedRatePerSecond: 0,
+          increaseSign,
+        },
+      }
+
+      setPreviewButtonSliderSpeedById((previous) => ({
+        ...previous,
+        [itemId]: 0,
+      }))
+
+      previewButtonSliderAnimationFramesRef.current[itemId] = window.requestAnimationFrame((frameMs) => {
+        runPreviewButtonSliderFrame(itemId, frameMs)
+      })
+    },
+    [runPreviewButtonSliderFrame]
+  )
+
+  const clearPreviewButtonSliderLoop = useCallback((itemId: string) => {
+    const frameId = previewButtonSliderAnimationFramesRef.current[itemId]
+    if (typeof frameId === "number") {
+      window.cancelAnimationFrame(frameId)
+      delete previewButtonSliderAnimationFramesRef.current[itemId]
+    }
+
+    const nextLoopState = { ...previewButtonSliderLoopStateRef.current }
+    delete nextLoopState[itemId]
+    previewButtonSliderLoopStateRef.current = nextLoopState
+
+    setPreviewButtonSliderDragById((previous) => {
+      if (!(itemId in previous)) return previous
+      const next = { ...previous }
+      delete next[itemId]
+      return next
+    })
+
+    setPreviewButtonSliderSpeedById((previous) => {
+      if (!(itemId in previous)) return previous
+      const next = { ...previous }
+      delete next[itemId]
+      return next
+    })
+
+    const nextRef = { ...previewButtonSliderDragByIdRef.current }
+    delete nextRef[itemId]
+    previewButtonSliderDragByIdRef.current = nextRef
+  }, [])
+
+  const handlePreviewButtonSliderDragStart = useCallback(
+    (asset: ButtonSliderAsset, event: React.PointerEvent<HTMLButtonElement>) => {
+      const rect = event.currentTarget.getBoundingClientRect()
+      const startX = event.clientX
+      const configuredIncreaseSign = asset.increaseDirection === "left" ? -1 : 1
+      const effectiveIncreaseSign = isSwapped ? configuredIncreaseSign * -1 : configuredIncreaseSign
+      const info: ButtonSliderDragInfo = {
+        startX,
+        currentX: startX,
+        signedDistance: 0,
+        buttonLeft: rect.left,
+        buttonWidth: rect.width,
+      }
+
+      clearPreviewButtonSliderLoop(asset.id)
+
+      previewButtonSliderDragByIdRef.current = {
+        ...previewButtonSliderDragByIdRef.current,
+        [asset.id]: info,
+      }
+      setPreviewButtonSliderDragById((previous) => ({ ...previous, [asset.id]: info }))
+      setPreviewButtonSliderValues((previous) => ({ ...previous, [asset.id]: 1 }))
+
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId)
+      } catch {
+        // no-op
+      }
+
+      startPreviewButtonSliderLoop(asset.id, effectiveIncreaseSign)
+    },
+    [clearPreviewButtonSliderLoop, isSwapped, startPreviewButtonSliderLoop]
+  )
+
+  const handlePreviewButtonSliderDragMove = useCallback(
+    (itemId: string, clientX: number) => {
+      const drag = previewButtonSliderDragByIdRef.current[itemId]
+      if (!drag) return
+
+      const info: ButtonSliderDragInfo = {
+        ...drag,
+        currentX: clientX,
+        signedDistance: clientX - drag.startX,
+      }
+
+      previewButtonSliderDragByIdRef.current = {
+        ...previewButtonSliderDragByIdRef.current,
+        [itemId]: info,
+      }
+      setPreviewButtonSliderDragById((previous) => ({ ...previous, [itemId]: info }))
+    },
+    []
+  )
+
+  const handlePreviewButtonSliderDragEnd = useCallback(
+    (asset: ButtonSliderAsset) => {
+      const value = previewButtonSliderValues[asset.id] ?? 0
+      const runtimeKey =
+        typeof asset.tag === "string" && asset.tag.trim().length > 0
+          ? normalizeRuntimeTag(asset.tag)
+          : ""
+
+      if (value > 0 && runtimeKey) {
+        commitSliderValueToTagStack(asset, value)
+        pushTagToStack(runtimeKey, value, asset.id, runtimeKey)
+
+        recordRuntimeEvent({
+          type: "button-slider-commit",
+          assetId: asset.id,
+          key: runtimeKey,
+          value,
+        })
+      }
+
+      clearPreviewButtonSliderLoop(asset.id)
+      setPreviewButtonSliderValues((previous) => {
+        if (!(asset.id in previous)) return previous
+        const next = { ...previous }
+        delete next[asset.id]
+        return next
+      })
+    },
+    [clearPreviewButtonSliderLoop, commitSliderValueToTagStack, previewButtonSliderValues, pushTagToStack, recordRuntimeEvent]
+  )
 
   const handleStageToggle = useCallback(
     (asset: ButtonAsset | IconButtonAsset | MovementAsset) => {
@@ -2206,6 +2574,53 @@ export default function ScoutPage() {
     })
   }, [recordRuntimeEvent, redoTagStackActions])
 
+  const handleResetScoutingData = useCallback(() => {
+    stopAllActiveHolds()
+    setTagStack([])
+    setRedoTagStack([])
+    setTagStackActions([])
+    setRedoTagStackActions([])
+    setInputValuesByKey({})
+    setTeamValue(TEAM_DEFAULT_VALUE)
+    setEditingMatchKey(null)
+    setEditingMatchDraft("")
+    setRuntimeEvents([])
+    setPreviewButtonSliderValues({})
+    setPreviewButtonSliderDragById({})
+    setPreviewButtonSliderSpeedById({})
+    setPreviewTagStacks({})
+    Object.values(previewButtonSliderAnimationFramesRef.current).forEach((frameId) => {
+      window.cancelAnimationFrame(frameId)
+    })
+    previewButtonSliderAnimationFramesRef.current = {}
+    previewButtonSliderLoopStateRef.current = {}
+    previewButtonSliderDragByIdRef.current = {}
+    setStartPositionsByAssetId({})
+    setHiddenStartPositionIds({})
+    setLockedStartPositionByAssetId({})
+    setMovementToggleCount(0)
+    setMovementPositionEvents([])
+    setHoldStatsByKey({})
+    setPreviewHoldDurationsById({})
+    setToggleTransitionCountByKey({})
+    setToggleLastChangedAtByKey({})
+    setToggleValuesByKey(
+      scoutAssets
+        .filter((candidate): candidate is ToggleSwitchAsset => candidate.type === "toggle-switch")
+        .reduce<Record<string, boolean>>((accumulator, candidate) => {
+          const toggleKey =
+            typeof candidate.tag === "string" && candidate.tag.trim().length > 0
+              ? candidate.tag
+              : candidate.id
+
+          accumulator[toggleKey] = candidate.value
+          return accumulator
+        }, {})
+    )
+
+    recordRuntimeEvent({ type: "reset" })
+  }, [TEAM_DEFAULT_VALUE, recordRuntimeEvent, scoutAssets, stopAllActiveHolds])
+
   const handleSubmit = useCallback(async () => {
     stopAllActiveHolds()
 
@@ -2215,8 +2630,8 @@ export default function ScoutPage() {
       ...new Set(
         scoutAssets
           .filter(
-            (asset): asset is ButtonAsset | IconButtonAsset =>
-              asset.type === "button" || asset.type === "icon-button"
+            (asset): asset is ButtonAsset | IconButtonAsset | ButtonSliderAsset =>
+              asset.type === "button" || asset.type === "icon-button" || asset.type === "button-slider"
           )
           .map((asset) => asset.tag)
           .filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
@@ -2539,11 +2954,110 @@ export default function ScoutPage() {
             )
           }
 
+          if (asset.type === "button-slider") {
+            const drag = previewButtonSliderDragById[asset.id]
+            const sliderValue = previewButtonSliderValues[asset.id]
+            const sliderSpeedPerSecond = previewButtonSliderSpeedById[asset.id] ?? 0
+            const isPressed = Boolean(drag)
+            const shouldShowLiveValue = isPressed && typeof sliderValue === "number"
+            const fieldBoundsWidth = measuredFieldBounds?.width ?? containerSize.width
+            const fieldBoundsHeight = measuredFieldBounds?.height ?? containerSize.height
+            const sliderPixelWidth = fieldBoundsWidth * (asset.width / 100)
+            const sliderPixelHeight = fieldBoundsHeight * (asset.height / 100)
+            const sliderValueFontSizePx = Math.max(
+              12,
+              Math.min(36, Math.round(Math.min(sliderPixelWidth * 0.24, sliderPixelHeight * 0.55)))
+            )
+            const resolvedDisplayMode =
+              asset.buttonSliderDisplayMode ?? (asset.iconName && asset.iconName.trim().length > 0 ? "icon" : "label")
+            const shouldShowIcon = !shouldShowLiveValue && resolvedDisplayMode === "icon"
+            const SliderIcon = shouldShowIcon && asset.iconName ? getLucideIcon(asset.iconName) : null
+
+            const lineLeft = drag ? Math.min(drag.startX, drag.currentX) - drag.buttonLeft : 0
+            const lineWidth = drag ? Math.max(1, Math.abs(drag.currentX - drag.startX)) : 0
+            const lineMidpoint = lineLeft + lineWidth / 2
+            const markerLeft = drag ? drag.currentX - drag.buttonLeft : 0
+
+            return (
+              <Button
+                key={asset.id ?? `button-slider-${index}`}
+                type="button"
+                variant="outline"
+                className="absolute overflow-visible rounded-lg border border-white/20 bg-slate-900 p-0 text-white hover:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
+                style={sizedStyle}
+                onPointerDown={(event) => {
+                  handlePreviewButtonSliderDragStart(asset, event)
+                }}
+                onPointerMove={(event) => {
+                  handlePreviewButtonSliderDragMove(asset.id, event.clientX)
+                }}
+                onPointerUp={() => {
+                  handlePreviewButtonSliderDragEnd(asset)
+                }}
+                onPointerCancel={() => {
+                  handlePreviewButtonSliderDragEnd(asset)
+                }}
+                onPointerLeave={() => {
+                  handlePreviewButtonSliderDragEnd(asset)
+                }}
+              >
+                {shouldShowLiveValue ? (
+                  <span
+                    className="relative z-30 rounded bg-slate-900/90 px-1 font-mono tabular-nums"
+                    style={{ fontSize: `${sliderValueFontSizePx}px`, lineHeight: 1 }}
+                  >
+                    {sliderValue}
+                  </span>
+                ) : shouldShowIcon && SliderIcon ? (
+                  <SliderIcon
+                    className="relative z-30 h-5 w-5"
+                    style={{
+                      stroke: asset.outlineColor ?? "currentColor",
+                      fill: asset.fillColor ?? "none",
+                    }}
+                  />
+                ) : (
+                  <span className="relative z-30">{asset.label ?? "Button Slider"}</span>
+                )}
+
+                {drag ? (
+                  <div className="pointer-events-none absolute left-0 top-1/2 z-10 h-0 w-full -translate-y-1/2 overflow-visible">
+                    <div
+                      className="absolute h-1.5 rounded-full bg-sky-300"
+                      style={{
+                        left: lineLeft,
+                        width: lineWidth,
+                      }}
+                    />
+                    <div
+                      className="absolute -translate-x-1/2 rounded border border-white/20 bg-slate-900/95 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200"
+                      style={{
+                        left: lineMidpoint,
+                        top: -20,
+                      }}
+                    >
+                      {sliderSpeedPerSecond >= 0 ? "+" : ""}
+                      {sliderSpeedPerSecond.toFixed(1)}/s
+                    </div>
+                    <span
+                      className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-200 bg-slate-950"
+                      style={{
+                        left: markerLeft,
+                        top: 0,
+                      }}
+                    />
+                  </div>
+                ) : null}
+              </Button>
+            )
+          }
+
           if (asset.type === "input") {
             const inputStateKey =
               typeof asset.tag === "string" && asset.tag.trim().length > 0
                 ? asset.tag
                 : asset.id
+            const inputValue = inputValuesByKey[inputStateKey] ?? ""
 
             return (
               <Field
@@ -2552,26 +3066,49 @@ export default function ScoutPage() {
                 style={sizedStyle}
               >
                 {asset.label ? <FieldLabel className="text-xs text-white/80">{asset.label}</FieldLabel> : null}
-                <Input
-                  value={inputValuesByKey[inputStateKey] ?? ""}
-                  onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
-                    const nextValue = event.target.value
-                    setInputValuesByKey((previous) => ({
-                      ...previous,
-                      [inputStateKey]: nextValue,
-                    }))
+                {asset.multiline ? (
+                  <textarea
+                    value={inputValue}
+                    onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => {
+                      const nextValue = event.target.value
+                      setInputValuesByKey((previous) => ({
+                        ...previous,
+                        [inputStateKey]: nextValue,
+                      }))
 
-                    recordRuntimeEvent({
-                      type: "input-change",
-                      assetId: asset.id,
-                      key: inputStateKey,
-                      value: nextValue,
-                    })
-                  }}
-                  placeholder={asset.placeholder}
-                  aria-label={asset.label ?? "Input"}
-                  className="h-full border-white/15 bg-slate-900/90 text-white placeholder:text-white/50"
-                />
+                      recordRuntimeEvent({
+                        type: "input-change",
+                        assetId: asset.id,
+                        key: inputStateKey,
+                        value: nextValue,
+                      })
+                    }}
+                    placeholder={asset.placeholder}
+                    aria-label={asset.label ?? "Input"}
+                    className="h-full w-full resize-none rounded-md border border-white/15 bg-slate-900/90 px-3 py-2 text-sm text-white placeholder:text-white/50"
+                  />
+                ) : (
+                  <Input
+                    value={inputValue}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                      const nextValue = event.target.value
+                      setInputValuesByKey((previous) => ({
+                        ...previous,
+                        [inputStateKey]: nextValue,
+                      }))
+
+                      recordRuntimeEvent({
+                        type: "input-change",
+                        assetId: asset.id,
+                        key: inputStateKey,
+                        value: nextValue,
+                      })
+                    }}
+                    placeholder={asset.placeholder}
+                    aria-label={asset.label ?? "Input"}
+                    className="h-full border-white/15 bg-slate-900/90 text-white placeholder:text-white/50"
+                  />
+                )}
               </Field>
             )
           }
@@ -2766,7 +3303,7 @@ export default function ScoutPage() {
                 key={asset.id ?? `movement-${index}`}
                 type="button"
                 variant="outline"
-                className="group absolute rounded-lg border border-white/20 bg-slate-900/90 text-white transition-all duration-150 ease-out active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
+                className="group absolute rounded-lg border border-white/20 bg-slate-900 text-white transition-all duration-150 ease-out active:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
                 style={sizedStyle}
                 onClick={() => handleMovementAssetClick(asset)}
               >
@@ -2886,7 +3423,7 @@ export default function ScoutPage() {
                   <Button
                     type="button"
                     variant="outline"
-                    className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
+                    className="h-full w-full rounded-md border-white/20 bg-slate-800 text-sm font-semibold text-white/70 opacity-100 hover:bg-slate-800 active:bg-slate-800"
                     onClick={() => {
                       const nextValue = Math.max(0, currentMatchValue - 1)
                       setMatchValuesByKey((previous) => ({
@@ -2943,7 +3480,7 @@ export default function ScoutPage() {
                   <Button
                     type="button"
                     variant="outline"
-                    className="h-full w-full rounded-md border-white/20 bg-slate-800/40 text-sm font-semibold text-white/70 opacity-100"
+                    className="h-full w-full rounded-md border-white/20 bg-slate-800 text-sm font-semibold text-white/70 opacity-100 hover:bg-slate-800 active:bg-slate-800"
                     onClick={() => {
                       const nextValue = currentMatchValue + 1
                       setMatchValuesByKey((previous) => ({
@@ -2978,7 +3515,12 @@ export default function ScoutPage() {
                     <Button
                       type="button"
                       variant={asset.buttonKind === "submit" ? "default" : "outline"}
-                      className="h-full w-full"
+                      className={cn(
+                        "h-full w-full",
+                        asset.buttonKind === "submit"
+                          ? "!bg-white !text-black hover:!bg-white active:!bg-white"
+                          : "!bg-slate-900 !text-white hover:!bg-slate-900 active:!bg-slate-900"
+                      )}
                     >
                       {teamValue.trim().length > 0 ? teamValue : "Select Team"}
                     </Button>
@@ -3032,10 +3574,10 @@ export default function ScoutPage() {
               : "!border-2 !border-red-400"
             : "border-white/20"
           const buttonToneClass = isSubmitButton
-            ? "!bg-white !text-black hover:!bg-white/90"
+            ? "!bg-white !text-black hover:!bg-white active:!bg-white"
             : isResetButton
-              ? "!bg-[#9e4042] !text-white hover:!bg-[#9e4042]/90"
-              : "!bg-slate-900 !text-white hover:!bg-slate-900"
+              ? "!bg-[#9e4042] !text-white hover:!bg-[#9e4042] active:!bg-[#9e4042]"
+              : "!bg-slate-900 !text-white hover:!bg-slate-900 active:!bg-slate-900"
 
           return (
             <Button
@@ -3064,7 +3606,11 @@ export default function ScoutPage() {
                   return
                 }
 
-                if (asset.buttonKind !== "submit" && asset.buttonKind !== "reset") {
+                if (
+                  asset.buttonKind !== "submit" &&
+                  asset.buttonKind !== "reset" &&
+                  asset.buttonKind !== "swap"
+                ) {
                   if (!isHoldMode) {
                     pushTagToStack(runtimeKey, asset.increment ?? 1, asset.id, runtimeKey)
                   }
@@ -3075,47 +3621,8 @@ export default function ScoutPage() {
                 }
 
                 if (asset.buttonKind === "reset") {
-                  const shouldReset = window.confirm(
-                    "Reset all scouting data for this match? This cannot be undone."
-                  )
-                  if (!shouldReset) {
-                    return
-                  }
-
-                  stopAllActiveHolds()
-                  setTagStack([])
-                  setRedoTagStack([])
-                  setTagStackActions([])
-                  setRedoTagStackActions([])
-                  setInputValuesByKey({})
-                  setTeamValue(TEAM_DEFAULT_VALUE)
-                  setEditingMatchKey(null)
-                  setEditingMatchDraft("")
-                  setRuntimeEvents([])
-                  setStartPositionsByAssetId({})
-                  setHiddenStartPositionIds({})
-                  setLockedStartPositionByAssetId({})
-                  setMovementToggleCount(0)
-                  setMovementPositionEvents([])
-                  setHoldStatsByKey({})
-                  setPreviewHoldDurationsById({})
-                  setToggleTransitionCountByKey({})
-                  setToggleLastChangedAtByKey({})
-                  setToggleValuesByKey(
-                    scoutAssets
-                      .filter((candidate): candidate is ToggleSwitchAsset => candidate.type === "toggle-switch")
-                      .reduce<Record<string, boolean>>((accumulator, candidate) => {
-                        const toggleKey =
-                          typeof candidate.tag === "string" && candidate.tag.trim().length > 0
-                            ? candidate.tag
-                            : candidate.id
-
-                        accumulator[toggleKey] = candidate.value
-                        return accumulator
-                      }, {})
-                  )
-
-                  recordRuntimeEvent({ type: "reset" })
+                  setIsResetDialogOpen(true)
+                  return
                 }
 
                 if (asset.buttonKind === "swap") {
@@ -3178,6 +3685,31 @@ export default function ScoutPage() {
           </div>
           <p className="text-muted-foreground break-all text-xs">{submitPayloadJson}</p>
           <DialogFooter showCloseButton />
+        </DialogContent>
+      </Dialog>
+      <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset All Scouting Data?</DialogTitle>
+            <DialogDescription>
+              This will clear all current scouting entries for this match and cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsResetDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                handleResetScoutingData()
+                setIsResetDialogOpen(false)
+              }}
+            >
+              Reset Data
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
