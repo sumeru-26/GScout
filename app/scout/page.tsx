@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { useSidebar } from "@/components/ui/sidebar"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 
@@ -283,6 +284,11 @@ type BoxBounds = {
 
 type FieldMapping = {
   mapping: Record<string, string>
+}
+
+type FieldAspectRatio = {
+  width: number
+  height: number
 }
 
 type ButtonSliderDragInfo = {
@@ -1020,6 +1026,38 @@ function applyFieldMappingToOutput(
   }, {})
 }
 
+function parseFieldAspectRatio(payload: unknown): FieldAspectRatio | null {
+  if (!payload || typeof payload !== "object") return null
+
+  const source = payload as {
+    aspectWidth?: unknown
+    aspectHeight?: unknown
+    editorState?: {
+      aspectWidth?: unknown
+      aspectHeight?: unknown
+    }
+  }
+
+  const widthCandidate =
+    toFiniteNumber(source.editorState?.aspectWidth) ?? toFiniteNumber(source.aspectWidth)
+  const heightCandidate =
+    toFiniteNumber(source.editorState?.aspectHeight) ?? toFiniteNumber(source.aspectHeight)
+
+  if (
+    typeof widthCandidate !== "number" ||
+    typeof heightCandidate !== "number" ||
+    widthCandidate <= 0 ||
+    heightCandidate <= 0
+  ) {
+    return null
+  }
+
+  return {
+    width: widthCandidate,
+    height: heightCandidate,
+  }
+}
+
 function tryParseJson(value: string): unknown {
   try {
     return JSON.parse(value)
@@ -1684,6 +1722,7 @@ export default function ScoutPage() {
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
   const [fieldMapping, setFieldMapping] = useState<FieldMapping | null>(null)
+  const [fieldAspectRatio, setFieldAspectRatio] = useState<FieldAspectRatio | null>(null)
   const [eventKey, setEventKey] = useState<string>("")
   const [scouterName, setScouterName] = useState<string>("")
   const [controlMode, setControlMode] = useState<ControlMode>("auto")
@@ -1723,6 +1762,7 @@ export default function ScoutPage() {
   const [previewSuccessOpenByAssetId, setPreviewSuccessOpenByAssetId] = useState<Record<string, boolean>>({})
   const isPreviewMode = true
   const { setHeaderActions } = useHeaderActions()
+  const { open: isSidebarOpen } = useSidebar()
 
   const getNowMs = useCallback(() => Math.max(0, Date.now() - sessionStartedAtMs), [sessionStartedAtMs])
 
@@ -1877,6 +1917,7 @@ export default function ScoutPage() {
     if (!storedPayload) {
       setScoutAssets([])
       setMirrorLine(null)
+      setFieldAspectRatio(null)
       return
     }
 
@@ -1886,6 +1927,7 @@ export default function ScoutPage() {
       const parsedAssets = parseScoutAssets(normalizedPayload)
       setScoutAssets(parsedAssets)
       setMirrorLine(parseMirrorLine(normalizedPayload))
+      setFieldAspectRatio(parseFieldAspectRatio(normalizedPayload))
 
       if (normalizedPayload && typeof normalizedPayload === "object") {
         const rootPayload = normalizedPayload as {
@@ -1907,6 +1949,7 @@ export default function ScoutPage() {
     } catch {
       setScoutAssets([])
       setMirrorLine(null)
+      setFieldAspectRatio(null)
       setEventKey("")
     }
   }, [])
@@ -1924,6 +1967,20 @@ export default function ScoutPage() {
 
     updateSize()
 
+    let animationFrameId: number | null = null
+    const transitionStartTime = performance.now()
+    const transitionRemeasureMs = 420
+
+    const remeasureDuringTransition = () => {
+      updateSize()
+
+      if (performance.now() - transitionStartTime < transitionRemeasureMs) {
+        animationFrameId = window.requestAnimationFrame(remeasureDuringTransition)
+      }
+    }
+
+    animationFrameId = window.requestAnimationFrame(remeasureDuringTransition)
+
     const observer = new ResizeObserver(() => {
       updateSize()
     })
@@ -1932,8 +1989,11 @@ export default function ScoutPage() {
 
     return () => {
       observer.disconnect()
+      if (animationFrameId !== null) {
+        window.cancelAnimationFrame(animationFrameId)
+      }
     }
-  }, [isFullscreen])
+  }, [isFullscreen, isSidebarOpen])
 
   useEffect(() => {
     if (!backgroundImage) {
@@ -1968,6 +2028,13 @@ export default function ScoutPage() {
   const measuredFieldBounds = useMemo(() => {
     if (containerSize.width <= 0 || containerSize.height <= 0) return null
 
+    if (fieldAspectRatio) {
+      return getContainedBounds(containerSize, {
+        width: fieldAspectRatio.width,
+        height: fieldAspectRatio.height,
+      })
+    }
+
     if (!backgroundImage || !backgroundImageSize) {
       return {
         left: 0,
@@ -1978,7 +2045,35 @@ export default function ScoutPage() {
     }
 
     return getContainedBounds(containerSize, backgroundImageSize)
-  }, [backgroundImage, backgroundImageSize, containerSize])
+  }, [backgroundImage, backgroundImageSize, containerSize, fieldAspectRatio])
+
+  const renderedBackgroundBounds = useMemo(() => {
+    if (!measuredFieldBounds) return null
+
+    if (
+      !backgroundImageSize ||
+      backgroundImageSize.width <= 0 ||
+      backgroundImageSize.height <= 0
+    ) {
+      return measuredFieldBounds
+    }
+
+    const containScale = Math.min(
+      measuredFieldBounds.width / backgroundImageSize.width,
+      measuredFieldBounds.height / backgroundImageSize.height,
+      1
+    )
+
+    const width = backgroundImageSize.width * containScale
+    const height = backgroundImageSize.height * containScale
+
+    return {
+      left: measuredFieldBounds.left + (measuredFieldBounds.width - width) / 2,
+      top: measuredFieldBounds.top + (measuredFieldBounds.height - height) / 2,
+      width,
+      height,
+    } satisfies BoxBounds
+  }, [backgroundImageSize, measuredFieldBounds])
 
   const stageBlurRootId = useMemo(() => {
     if (!previewStageParentId) return null
@@ -3261,17 +3356,7 @@ export default function ScoutPage() {
           ? "h-[100dvh] w-full rounded-none border-0"
           : "min-h-[calc(100vh-3.5rem)] rounded-xl"
       )}
-      style={
-        backgroundImage
-          ? {
-              backgroundColor: "#030919",
-              backgroundImage: `url("${backgroundImage}")`,
-              backgroundSize: "contain",
-              backgroundPosition: "center",
-              backgroundRepeat: "no-repeat",
-            }
-          : { backgroundColor: "#030919" }
-      }
+      style={{ backgroundColor: "#030919" }}
     >
       <div
         className={cn(
@@ -3290,6 +3375,31 @@ export default function ScoutPage() {
           })
         }}
       >
+        {backgroundImage ? (
+          <img
+            src={backgroundImage}
+            alt="Field background"
+            className="pointer-events-none absolute select-none"
+            style={
+              renderedBackgroundBounds
+                ? {
+                    left: renderedBackgroundBounds.left,
+                    top: renderedBackgroundBounds.top,
+                    width: renderedBackgroundBounds.width,
+                    height: renderedBackgroundBounds.height,
+                    objectFit: "fill",
+                  }
+                : {
+                    left: 0,
+                    top: 0,
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "contain",
+                  }
+            }
+          />
+        ) : null}
+
         {isFallbackFullscreen ? (
           <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-white/15 bg-slate-900/90 px-3 py-1 text-xs text-white/80 shadow-sm">
             App fullscreen mode (native fullscreen is not available on this browser)
