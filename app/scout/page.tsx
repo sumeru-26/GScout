@@ -33,8 +33,12 @@ type ButtonAsset = {
   type: "button"
   buttonKind: "button" | "swap" | "undo" | "redo" | "submit" | "reset"
   tag?: string
+  autoTeleopScope?: "auto" | "teleop"
   increment?: number
   buttonPressMode?: "tap" | "hold"
+  successTrackingEnabled?: boolean
+  successPopoverOffsetX?: number
+  successPopoverOffsetY?: number
   stageParentId?: string
   stageParentTag?: string
   stageHideAfterSelection?: boolean
@@ -51,8 +55,12 @@ type IconButtonAsset = {
   id: string
   type: "icon-button"
   tag?: string
+  autoTeleopScope?: "auto" | "teleop"
   increment?: number
   buttonPressMode?: "tap" | "hold"
+  successTrackingEnabled?: boolean
+  successPopoverOffsetX?: number
+  successPopoverOffsetY?: number
   stageParentId?: string
   stageParentTag?: string
   stageHideAfterSelection?: boolean
@@ -71,7 +79,9 @@ type ButtonSliderAsset = {
   id: string
   type: "button-slider"
   tag?: string
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -87,7 +97,9 @@ type ButtonSliderAsset = {
 type CoverAsset = {
   id: string
   type: "cover"
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -98,7 +110,9 @@ type InputAsset = {
   id: string
   type: "input"
   tag?: string
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -111,20 +125,25 @@ type InputAsset = {
 type AutoToggleAsset = {
   id: string
   type: "auto-toggle"
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
   height: number
   mode?: "auto" | "teleop"
   durationSeconds?: number
+  teleopDurationSeconds?: number
 }
 
 type ToggleSwitchAsset = {
   id: string
   type: "toggle-switch"
   tag?: string
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -138,7 +157,9 @@ type ToggleSwitchAsset = {
 type MatchSelectAsset = {
   id: string
   type: "match-select"
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -152,7 +173,9 @@ type MatchSelectAsset = {
 type LogAsset = {
   id: string
   type: "log"
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -163,7 +186,9 @@ type StartPositionAsset = {
   id: string
   type: "start-position"
   tag?: string
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   x: number
   y: number
   width: number
@@ -176,7 +201,9 @@ type MovementAsset = {
   id: string
   type: "movement"
   tag?: string
+  autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
+  stageParentTag?: string
   stageHideAfterSelection?: boolean
   stageBlurBackgroundOnClick?: boolean
   stageHideOtherElementsInStage?: boolean
@@ -252,6 +279,10 @@ type BoxBounds = {
   top: number
   width: number
   height: number
+}
+
+type FieldMapping = {
+  mapping: Record<string, string>
 }
 
 type ButtonSliderDragInfo = {
@@ -458,9 +489,24 @@ function normalizeIncreaseDirection(value: unknown): "left" | "right" {
   return value.trim().toLowerCase() === "left" ? "left" : "right"
 }
 
+function normalizeAutoTeleopScope(value: unknown): "auto" | "teleop" | undefined {
+  if (typeof value !== "string") return undefined
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "auto" || normalized === "teleop") return normalized
+  return undefined
+}
+
 function parseStageParentId(item: Record<string, unknown>): string | undefined {
   if (typeof item.stageParentId === "string" && item.stageParentId.trim().length > 0) {
     return item.stageParentId.trim()
+  }
+
+  return undefined
+}
+
+function parseStageParentTag(item: Record<string, unknown>): string | undefined {
+  if (typeof item.stageParentTag === "string" && item.stageParentTag.trim().length > 0) {
+    return item.stageParentTag.trim()
   }
 
   return undefined
@@ -700,30 +746,278 @@ function collectNamedAssetItems(source: unknown, depth = 0): Record<string, unkn
   return collected
 }
 
+function normalizeCompactPayloadItems(payloadEntries: unknown[]): Record<string, unknown>[] {
+  return payloadEntries.reduce<Record<string, unknown>[]>((accumulator, entry, index) => {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return accumulator
+
+      const sourceEntry = entry as Record<string, unknown>
+      const keys = Object.keys(sourceEntry)
+      if (keys.length !== 1) return accumulator
+
+      const sourceKind = keys[0]
+      const sourceValue = sourceEntry[sourceKind]
+      if (!sourceValue || typeof sourceValue !== "object" || Array.isArray(sourceValue)) return accumulator
+
+      const source = sourceValue as Record<string, unknown>
+      const left = toFiniteNumber(source.x1)
+      const right = toFiniteNumber(source.x2)
+      const top = toFiniteNumber(source.y1)
+      const bottom = toFiniteNumber(source.y2)
+      const hasBounds = left !== null && right !== null && top !== null && bottom !== null
+
+      const normalizedKind = sourceKind.trim().toLowerCase()
+      const resolvedKind =
+        normalizedKind === "mirror-line"
+          ? "mirror"
+          : normalizedKind === "log-view"
+            ? "log"
+            : normalizedKind === "icon-button"
+              ? "icon"
+              : normalizedKind === "toggle-switch"
+                ? "toggle-switch"
+                : normalizedKind === "text-input"
+                  ? "input"
+                  : normalizedKind
+
+      const action =
+        typeof source.action === "string" && source.action.trim().length > 0
+          ? source.action.trim().toLowerCase()
+          : undefined
+
+      const x =
+        toFiniteNumber(source.x) ??
+        (hasBounds ? ((left as number) + (right as number)) / 2 : null)
+
+      const y =
+        toFiniteNumber(source.y) ??
+        (hasBounds ? ((top as number) + (bottom as number)) / 2 : null)
+
+      const width =
+        toFiniteNumber(source.width) ??
+        (hasBounds ? Math.abs((right as number) - (left as number)) : null)
+
+      const height =
+        toFiniteNumber(source.height) ??
+        (hasBounds ? Math.abs((top as number) - (bottom as number)) : null)
+
+      if (x === null || y === null || width === null || height === null) return accumulator
+
+      const itemId =
+        typeof source.id === "string" && source.id.trim().length > 0
+          ? source.id.trim()
+          : `${resolvedKind}-${index}`
+
+      const normalizedItem = {
+        ...source,
+        id: itemId,
+        kind: action ?? resolvedKind,
+        type: action ?? resolvedKind,
+        x,
+        y,
+        width,
+        height,
+        text:
+          typeof source.text === "string"
+            ? source.text
+            : typeof source.label === "string"
+              ? source.label
+              : undefined,
+        iconName:
+          typeof source.icon === "string"
+            ? source.icon
+            : typeof source.iconName === "string"
+              ? source.iconName
+              : undefined,
+        outlineColor:
+          typeof source.outline === "string"
+            ? source.outline
+            : typeof source.outlineColor === "string"
+              ? source.outlineColor
+              : undefined,
+        fillColor:
+          typeof source.fill === "string"
+            ? source.fill
+            : typeof source.fillColor === "string"
+              ? source.fillColor
+              : undefined,
+        coverVisible: parseStageFlag(source.visible, true),
+        startX:
+          normalizedKind === "mirror-line"
+            ? (toFiniteNumber(source.x1) ?? toFiniteNumber(source.startX) ?? 0)
+            : source.startX,
+        startY:
+          normalizedKind === "mirror-line"
+            ? (toFiniteNumber(source.y1) ?? toFiniteNumber(source.startY) ?? 0)
+            : source.startY,
+        endX:
+          normalizedKind === "mirror-line"
+            ? (toFiniteNumber(source.x2) ?? toFiniteNumber(source.endX) ?? 0)
+            : source.endX,
+        endY:
+          normalizedKind === "mirror-line"
+            ? (toFiniteNumber(source.y2) ?? toFiniteNumber(source.endY) ?? 0)
+            : source.endY,
+        autoToggleDurationSeconds:
+          toFiniteNumber(source.timerSeconds) ?? toFiniteNumber(source.autoToggleDurationSeconds) ?? undefined,
+        autoToggleTeleopDurationSeconds:
+          toFiniteNumber(source.teleopTimerSeconds) ?? toFiniteNumber(source.autoToggleTeleopDurationSeconds) ?? undefined,
+        autoToggleMode:
+          typeof source.mode === "string"
+            ? source.mode
+            : typeof source.autoToggleMode === "string"
+              ? source.autoToggleMode
+              : undefined,
+        buttonPressMode:
+          typeof source.pressMode === "string"
+            ? source.pressMode
+            : typeof source.buttonPressMode === "string"
+              ? source.buttonPressMode
+              : undefined,
+        inputIsTextArea:
+          typeof source.multiline === "boolean"
+            ? source.multiline
+            : typeof source.inputIsTextArea === "boolean"
+              ? source.inputIsTextArea
+              : undefined,
+        stageParentTag:
+          typeof source.stageParentTag === "string" && source.stageParentTag.trim().length > 0
+            ? source.stageParentTag
+            : undefined,
+        stageHideAfterSelection:
+          parseStageFlag(source.hideAfterSelection) || parseStageFlag(source.stageHideAfterSelection),
+        stageBlurBackgroundOnClick:
+          parseStageFlag(source.blurBackgroundOnClick) || parseStageFlag(source.stageBlurBackgroundOnClick),
+        stageHideOtherElementsInStage:
+          parseStageFlag(source.hideOtherElementsInStage) || parseStageFlag(source.stageHideOtherElementsInStage),
+        buttonSliderIncreaseDirection:
+          typeof source.increaseDirection === "string"
+            ? source.increaseDirection
+            : typeof source.buttonSliderIncreaseDirection === "string"
+              ? source.buttonSliderIncreaseDirection
+              : undefined,
+        autoTeleopScope: normalizeAutoTeleopScope(source.autoTeleopScope),
+        successTrackingEnabled:
+          parseStageFlag(source.trackSuccess) || parseStageFlag(source.successTrackingEnabled),
+        successPopoverOffsetX:
+          toFiniteNumber(source.successPopoverOffsetX) ??
+          toFiniteNumber(source.success_popover_offset_x) ??
+          0,
+        successPopoverOffsetY:
+          toFiniteNumber(source.successPopoverOffsetY) ??
+          toFiniteNumber(source.success_popover_offset_y) ??
+          0,
+      } satisfies Record<string, unknown>
+
+      accumulator.push(normalizedItem)
+      return accumulator
+    }, [])
+}
+
 function getPayloadItems(payload: unknown): unknown[] {
   if (!payload) return []
 
-  const directItems = Array.isArray(payload) ? payload : []
+  if (Array.isArray(payload)) {
+    return payload
+  }
 
-  const nestedItems =
-    payload && typeof payload === "object"
-      ? (() => {
-          const source = payload as {
-            items?: unknown
-            editorState?: {
-              items?: unknown
-            }
-          }
+  if (payload && typeof payload === "object") {
+    const source = payload as {
+      items?: unknown
+      payload?: unknown
+      editorState?: {
+        items?: unknown
+      }
+    }
 
-          if (Array.isArray(source.items)) return source.items
-          if (Array.isArray(source.editorState?.items)) return source.editorState.items
-          return []
-        })()
-      : []
+    if (Array.isArray(source.editorState?.items)) {
+      return source.editorState.items
+    }
 
-  const namedItems = collectNamedAssetItems(payload)
+    if (Array.isArray(source.payload)) {
+      return normalizeCompactPayloadItems(source.payload)
+    }
 
-  return [...directItems, ...nestedItems, ...namedItems]
+    if (Array.isArray(source.items)) {
+      return source.items
+    }
+
+    return collectNamedAssetItems(payload)
+  }
+
+  return []
+}
+
+function resolveStageParentIdsByTag(assets: ScoutAsset[]): ScoutAsset[] {
+  const tagToAssetId = new Map<string, string>()
+
+  assets.forEach((asset) => {
+    if (!("tag" in asset) || typeof asset.tag !== "string") return
+    const normalizedTag = asset.tag.trim().toLowerCase()
+    if (!normalizedTag) return
+    if (!tagToAssetId.has(normalizedTag)) {
+      tagToAssetId.set(normalizedTag, asset.id)
+    }
+  })
+
+  return assets.map((asset) => {
+    if (asset.stageParentId) return asset
+    if (!("stageParentTag" in asset) || typeof asset.stageParentTag !== "string") return asset
+
+    const normalizedStageTag = asset.stageParentTag.trim().toLowerCase()
+    if (!normalizedStageTag) return asset
+
+    const resolvedParentId = tagToAssetId.get(normalizedStageTag)
+    if (!resolvedParentId) return asset
+
+    return {
+      ...asset,
+      stageParentId: resolvedParentId,
+    }
+  })
+}
+
+function parseFieldMapping(value: unknown): FieldMapping | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+
+  const source = value as { mapping?: unknown }
+  if (!source.mapping || typeof source.mapping !== "object" || Array.isArray(source.mapping)) {
+    return null
+  }
+
+  const mapping = Object.entries(source.mapping as Record<string, unknown>).reduce<Record<string, string>>(
+    (accumulator, [index, key]) => {
+      if (typeof key !== "string" || !key.trim()) return accumulator
+      accumulator[index] = key.trim()
+      return accumulator
+    },
+    {}
+  )
+
+  return {
+    mapping,
+  }
+}
+
+function applyFieldMappingToOutput(
+  output: Record<string, number | string | boolean>,
+  fieldMapping: FieldMapping | null
+) {
+  if (!fieldMapping || Object.keys(fieldMapping.mapping).length === 0) {
+    return output
+  }
+
+  const keyToIndex = Object.entries(fieldMapping.mapping).reduce<Record<string, string>>(
+    (accumulator, [index, mappedKey]) => {
+      accumulator[mappedKey] = index
+      return accumulator
+    },
+    {}
+  )
+
+  return Object.entries(output).reduce<Record<string, number | string | boolean>>((accumulator, [key, value]) => {
+    accumulator[keyToIndex[key] ?? key] = value
+    return accumulator
+  }, {})
 }
 
 function tryParseJson(value: string): unknown {
@@ -906,7 +1200,7 @@ function parseMirrorLine(payload: unknown): MirrorLine | null {
 function parseScoutAssets(payload: unknown): ScoutAsset[] {
   const items = getPayloadItems(payload)
 
-  return items
+  const parsedAssets = items
     .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
     .filter(
       (item) =>
@@ -995,17 +1289,33 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         ? item.type
         : normalizeActionButtonKind(item.kind)
           ? item.kind
+          : normalizeActionButtonKind(item.action)
+            ? item.action
           : null
       const stageParentId = parseStageParentId(item)
+      const stageParentTag = parseStageParentTag(item)
       const stageHideAfterSelection = parseStageFlag(item.stageHideAfterSelection)
       const stageBlurBackgroundOnClick = parseStageFlag(item.stageBlurBackgroundOnClick)
       const stageHideOtherElementsInStage = parseStageFlag(item.stageHideOtherElementsInStage)
+      const autoTeleopScope = normalizeAutoTeleopScope(item.autoTeleopScope)
+      const successTrackingEnabled =
+        parseStageFlag(item.trackSuccess) || parseStageFlag(item.successTrackingEnabled)
+      const successPopoverOffsetX =
+        toFiniteNumber(item.successPopoverOffsetX) ??
+        toFiniteNumber(item.success_popover_offset_x) ??
+        0
+      const successPopoverOffsetY =
+        toFiniteNumber(item.successPopoverOffsetY) ??
+        toFiniteNumber(item.success_popover_offset_y) ??
+        0
 
       if (isCover) {
         return {
           id,
           type: "cover",
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -1023,7 +1333,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "input",
           tag: parseAssetTag(item),
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -1054,13 +1366,19 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "auto-toggle",
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
           height: clampSizeScale(item.height as number),
           mode: autoMode,
           durationSeconds: autoDurationSeconds,
+          teleopDurationSeconds:
+            toNonNegativeWholeNumber(item.autoToggleTeleopDurationSeconds) ??
+            toNonNegativeWholeNumber(item.teleopTimerSeconds) ??
+            undefined,
         } satisfies AutoToggleAsset
       }
 
@@ -1083,7 +1401,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "toggle-switch",
           tag: parseAssetTag(item),
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -1107,7 +1427,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "log",
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -1120,7 +1442,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "start-position",
           tag: parseAssetTag(item),
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -1138,7 +1462,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "movement",
           tag: parseAssetTag(item),
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           stageHideAfterSelection,
           stageBlurBackgroundOnClick,
           stageHideOtherElementsInStage,
@@ -1167,7 +1493,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "match-select",
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -1195,7 +1523,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "button-slider",
           tag: parseAssetTag(item),
+          autoTeleopScope,
           stageParentId,
+          stageParentTag,
           x: clampPositionScale(item.x as number),
           y: clampPositionScale(item.y as number),
           width: clampSizeScale(item.width as number),
@@ -1238,8 +1568,12 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
           id,
           type: "icon-button",
           tag: parseAssetTag(item),
+          autoTeleopScope,
           increment: parsedIncrement ?? undefined,
           buttonPressMode: normalizePressMode(item.buttonPressMode ?? item.pressMode),
+          successTrackingEnabled,
+          successPopoverOffsetX,
+          successPopoverOffsetY,
           stageParentId,
           stageParentTag:
             typeof item.stageParentTag === "string" && item.stageParentTag.trim().length > 0
@@ -1273,9 +1607,14 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         buttonKind: isTeamSelect ? "button" : isSwapButton ? "swap" : actionButtonKind ?? "button",
         // Team-select assets can come through with an empty tag, so set a stable internal tag.
         tag: isTeamSelect ? "team-select" : parseAssetTag(item),
+        autoTeleopScope,
         increment: parsedIncrement ?? undefined,
         buttonPressMode: normalizePressMode(item.buttonPressMode ?? item.pressMode),
+        successTrackingEnabled,
+        successPopoverOffsetX,
+        successPopoverOffsetY,
         stageParentId,
+        stageParentTag,
         stageHideAfterSelection,
         stageBlurBackgroundOnClick,
         stageHideOtherElementsInStage,
@@ -1295,6 +1634,8 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
                 : undefined,
       } satisfies ButtonAsset
     })
+
+  return resolveStageParentIdsByTag(parsedAssets)
 }
 
 function isStageableAsset(asset: ScoutAsset): asset is ButtonAsset | IconButtonAsset | MovementAsset {
@@ -1342,6 +1683,7 @@ export default function ScoutPage() {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
+  const [fieldMapping, setFieldMapping] = useState<FieldMapping | null>(null)
   const [eventKey, setEventKey] = useState<string>("")
   const [scouterName, setScouterName] = useState<string>("")
   const [controlMode, setControlMode] = useState<ControlMode>("auto")
@@ -1378,6 +1720,7 @@ export default function ScoutPage() {
   const [movementSharedDirection, setMovementSharedDirection] = useState<"left" | "right">("left")
   const [movementToggleCount, setMovementToggleCount] = useState<number>(0)
   const [movementPositionEvents, setMovementPositionEvents] = useState<RuntimeActionEvent[]>([])
+  const [previewSuccessOpenByAssetId, setPreviewSuccessOpenByAssetId] = useState<Record<string, boolean>>({})
   const isPreviewMode = true
   const { setHeaderActions } = useHeaderActions()
 
@@ -1518,6 +1861,19 @@ export default function ScoutPage() {
     }
 
     const storedPayload = localStorage.getItem("payload")
+    const storedFieldMapping = localStorage.getItem("fieldMapping")
+
+    if (!storedFieldMapping) {
+      setFieldMapping(null)
+    } else {
+      try {
+        const parsedFieldMapping = JSON.parse(storedFieldMapping) as unknown
+        setFieldMapping(parseFieldMapping(parsedFieldMapping))
+      } catch {
+        setFieldMapping(null)
+      }
+    }
+
     if (!storedPayload) {
       setScoutAssets([])
       setMirrorLine(null)
@@ -1712,30 +2068,36 @@ export default function ScoutPage() {
   }, [displayedAssets, previewStageParentId])
 
   const visibleAssets = useMemo(() => {
+    const applyScopeFilter = (assets: ScoutAsset[]) =>
+      assets.filter((asset) => {
+        if (!asset.autoTeleopScope) return true
+        return asset.autoTeleopScope === controlMode
+      })
+
     if (!previewStageParentId) {
-      return displayedAssets.filter((asset) => !asset.stageParentId)
+      return applyScopeFilter(displayedAssets.filter((asset) => !asset.stageParentId))
     }
 
     const stageRoot = displayedAssets.find((asset) => asset.id === previewStageParentId)
     if (!stageRoot || !isStageableAsset(stageRoot)) {
-      return displayedAssets.filter((asset) => !asset.stageParentId)
+      return applyScopeFilter(displayedAssets.filter((asset) => !asset.stageParentId))
     }
 
     const hideRoot = Boolean(stageRoot.stageHideAfterSelection)
     const hideOthers = Boolean(stageRoot.stageHideOtherElementsInStage)
 
     if (hideOthers) {
-      return displayedAssets.filter(
+      return applyScopeFilter(displayedAssets.filter(
         (asset) => asset.stageParentId === previewStageParentId || (!hideRoot && asset.id === previewStageParentId)
-      )
+      ))
     }
 
-    return displayedAssets.filter((asset) => {
+    return applyScopeFilter(displayedAssets.filter((asset) => {
       if (asset.stageParentId === previewStageParentId) return true
       if (asset.id === previewStageParentId) return !hideRoot
       return !asset.stageParentId
-    })
-  }, [displayedAssets, previewStageParentId])
+    }))
+  }, [controlMode, displayedAssets, previewStageParentId])
 
   const isSwapMirrored = useMemo(() => isSwapped, [isSwapped])
 
@@ -1946,6 +2308,7 @@ export default function ScoutPage() {
     setPreviewButtonSliderDragById({})
     setPreviewButtonSliderSpeedById({})
     setPreviewTagStacks({})
+    setPreviewSuccessOpenByAssetId({})
     Object.values(previewButtonSliderAnimationFramesRef.current).forEach((frameId) => {
       window.cancelAnimationFrame(frameId)
     })
@@ -2499,6 +2862,34 @@ export default function ScoutPage() {
     [controlMode, getNowMs, handleStageToggle, recordRuntimeEvent]
   )
 
+  const onPreviewSuccessToggle = useCallback((assetId: string) => {
+    setPreviewSuccessOpenByAssetId((previous) => ({
+      ...previous,
+      [assetId]: !previous[assetId],
+    }))
+  }, [])
+
+  const onPreviewSuccessSelect = useCallback(
+    (asset: ButtonAsset | IconButtonAsset, result: "success" | "fail") => {
+      setPreviewSuccessOpenByAssetId((previous) => ({
+        ...previous,
+        [asset.id]: false,
+      }))
+
+      const runtimeKey = normalizeRuntimeTag(getAssetRuntimeKey(asset))
+      if (!runtimeKey) return
+
+      pushTagToStack(`${runtimeKey}.${result}`, 1, asset.id, runtimeKey)
+      recordRuntimeEvent({
+        type: "success-select",
+        assetId: asset.id,
+        key: runtimeKey,
+        value: result,
+      })
+    },
+    [pushTagToStack, recordRuntimeEvent]
+  )
+
   const handleStartPositionTap = useCallback(
     (asset: StartPositionAsset, event: React.PointerEvent<HTMLDivElement>) => {
       const rect = event.currentTarget.getBoundingClientRect()
@@ -2589,6 +2980,7 @@ export default function ScoutPage() {
     setPreviewButtonSliderDragById({})
     setPreviewButtonSliderSpeedById({})
     setPreviewTagStacks({})
+    setPreviewSuccessOpenByAssetId({})
     Object.values(previewButtonSliderAnimationFramesRef.current).forEach((frameId) => {
       window.cancelAnimationFrame(frameId)
     })
@@ -2639,6 +3031,24 @@ export default function ScoutPage() {
       ),
     ]
 
+    const uniqueSuccessTags = [
+      ...new Set(
+        scoutAssets
+          .filter(
+            (asset): asset is ButtonAsset | IconButtonAsset =>
+              (asset.type === "button" || asset.type === "icon-button") &&
+              asset.successTrackingEnabled === true &&
+              typeof asset.tag === "string" &&
+              asset.tag.trim().length > 0
+          )
+          .flatMap((asset) => {
+            const normalizedTag = asset.tag?.trim() ?? ""
+            if (!normalizedTag) return []
+            return [`${normalizedTag}.success`, `${normalizedTag}.fail`]
+          })
+      ),
+    ]
+
     const uniqueInputTags = [
       ...new Set(
         scoutAssets
@@ -2657,7 +3067,7 @@ export default function ScoutPage() {
 
     const uniqueModePrefixedTags = [
       ...new Set(
-        uniqueButtonAndIconTags.flatMap((tag) => {
+        [...uniqueButtonAndIconTags, ...uniqueSuccessTags].flatMap((tag) => {
           const normalizedTag = stripModePrefix(tag)
           return [`auto.${normalizedTag}`, `teleop.${normalizedTag}`]
         })
@@ -2720,7 +3130,8 @@ export default function ScoutPage() {
       scouter: scouterName,
     }
 
-    const payloadJson = JSON.stringify(payloadObject)
+    const mappedPayloadObject = applyFieldMappingToOutput(payloadObject, fieldMapping)
+    const payloadJson = JSON.stringify(mappedPayloadObject)
     setSubmitPayloadJson(payloadJson)
 
     try {
@@ -2735,9 +3146,10 @@ export default function ScoutPage() {
 
     setIsSubmitDialogOpen(true)
 
-    console.log("[ScoutPage] submit payload:", payloadObject)
+    console.log("[ScoutPage] submit payload:", mappedPayloadObject)
   }, [
     TEAM_SELECT_TAG,
+    fieldMapping,
     inputValuesByKey,
     scoutAssets,
     scouterName,
@@ -2916,6 +3328,7 @@ export default function ScoutPage() {
             const isHoldMode = (asset.buttonPressMode ?? "tap") === "hold"
             const holdDurationMs = previewHoldDurationsById[asset.id]
             const showHoldTimer = isHoldMode && typeof holdDurationMs === "number"
+            const previewSuccessOpen = previewSuccessOpenByAssetId[asset.id] === true
 
             return (
               <Button
@@ -2925,8 +3338,12 @@ export default function ScoutPage() {
                 className="absolute rounded-lg border border-white/20 bg-slate-900 p-0 text-white hover:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
                 style={sizedStyle}
                 onClick={() => {
-                  if (handleStageToggle(asset)) return
+                  if (asset.successTrackingEnabled) {
+                    onPreviewSuccessToggle(asset.id)
+                    return
+                  }
                   if (isHoldMode) return
+                  if (handleStageToggle(asset)) return
                   pushTagToStack(runtimeKey, asset.increment ?? 1, asset.id, runtimeKey)
                 }}
                 onPointerDown={() => startHoldForAsset(asset)}
@@ -2945,9 +3362,43 @@ export default function ScoutPage() {
                     }}
                   />
                 )}
+                {asset.successTrackingEnabled ? (
+                  <span className="pointer-events-none absolute -left-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-emerald-900 text-emerald-200">
+                    <LucideIcons.Check className="h-2.5 w-2.5" />
+                  </span>
+                ) : null}
                 {hasStageBadge ? (
                   <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
                     <LucideIcons.ChevronDown className="h-3 w-3" />
+                  </span>
+                ) : null}
+                {previewSuccessOpen ? (
+                  <span
+                    className="absolute inset-0 z-40 grid grid-cols-2 overflow-hidden rounded-md"
+                    style={{
+                      transform: `translate(${asset.successPopoverOffsetX ?? 0}px, ${asset.successPopoverOffsetY ?? 0}px)`,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="flex items-center justify-center bg-emerald-600/90 text-white"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onPreviewSuccessSelect(asset, "success")
+                      }}
+                    >
+                      <LucideIcons.Check className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      className="flex items-center justify-center bg-rose-600/90 text-white"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onPreviewSuccessSelect(asset, "fail")
+                      }}
+                    >
+                      <LucideIcons.X className="h-4 w-4" />
+                    </button>
                   </span>
                 ) : null}
               </Button>
@@ -3117,6 +3568,13 @@ export default function ScoutPage() {
             const orderedModes: readonly ControlMode[] = isSwapMirrored
               ? ["teleop", "auto"]
               : ["auto", "teleop"]
+            const groupGap = 4
+            const groupPadding = 4
+            const fieldBoundsWidth = measuredFieldBounds?.width ?? containerSize.width
+            const fieldBoundsHeight = measuredFieldBounds?.height ?? containerSize.height
+            const togglePixelWidth = fieldBoundsWidth * (asset.width / 100)
+            const togglePixelHeight = fieldBoundsHeight * (asset.height / 100)
+            const textSize = Math.max(11, Math.min(15, Math.round(Math.min(togglePixelWidth * 0.09, togglePixelHeight * 0.42))))
 
             return (
               <ToggleGroup
@@ -3124,14 +3582,16 @@ export default function ScoutPage() {
                 type="single"
                 value={controlMode}
                 onValueChange={handleAutoToggleGroupChange}
-                className="absolute grid h-full w-full grid-cols-2 gap-1 rounded-md border border-white/20 bg-slate-900/90 p-1 transition-all duration-150 ease-out"
-                style={sizedStyle}
+                className="absolute grid h-full w-full grid-cols-2 rounded-md border border-white/20 bg-slate-900/90 transition-all duration-150 ease-out"
+                style={{ ...sizedStyle, gap: groupGap, padding: groupPadding }}
               >
                 {orderedModes.map((mode) => (
                   <ToggleGroupItem
                     key={`${asset.id ?? `auto-toggle-${index}`}-${mode}`}
                     value={mode}
-                    className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+                    aria-label={mode === "auto" ? "Toggle auto" : "Toggle teleop"}
+                    className="!h-full min-h-0 min-w-0 rounded-sm border border-transparent px-1 text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+                    style={{ fontSize: `${textSize}px` }}
                   >
                     {mode === "auto" ? autoTimerLabel : "Teleop"}
                   </ToggleGroupItem>
@@ -3565,6 +4025,7 @@ export default function ScoutPage() {
           const holdDurationMs = previewHoldDurationsById[asset.id]
           const holdContent =
             isHoldMode && typeof holdDurationMs === "number" ? `${(holdDurationMs / 1000).toFixed(2)}s` : null
+          const previewSuccessOpen = previewSuccessOpenByAssetId[asset.id] === true
           const isSwapButton = asset.buttonKind === "swap"
           const isSubmitButton = asset.buttonKind === "submit"
           const isResetButton = asset.buttonKind === "reset"
@@ -3592,6 +4053,11 @@ export default function ScoutPage() {
               )}
               style={sizedStyle}
               onClick={() => {
+                if (asset.buttonKind === "button" && asset.successTrackingEnabled) {
+                  onPreviewSuccessToggle(asset.id)
+                  return
+                }
+
                 if (asset.buttonKind === "button" && handleStageToggle(asset)) {
                   return
                 }
@@ -3659,9 +4125,43 @@ export default function ScoutPage() {
               ) : (
                 holdContent ?? asset.text ?? "Button"
               )}
+              {asset.buttonKind === "button" && asset.successTrackingEnabled ? (
+                <span className="pointer-events-none absolute -left-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-emerald-900 text-emerald-200">
+                  <LucideIcons.Check className="h-2.5 w-2.5" />
+                </span>
+              ) : null}
               {hasStageBadge ? (
                 <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
                   <LucideIcons.ChevronDown className="h-3 w-3" />
+                </span>
+              ) : null}
+              {asset.buttonKind === "button" && previewSuccessOpen ? (
+                <span
+                  className="absolute inset-0 z-40 grid grid-cols-2 overflow-hidden rounded-md"
+                  style={{
+                    transform: `translate(${asset.successPopoverOffsetX ?? 0}px, ${asset.successPopoverOffsetY ?? 0}px)`,
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="flex items-center justify-center bg-emerald-600/90 text-white"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onPreviewSuccessSelect(asset, "success")
+                    }}
+                  >
+                    <LucideIcons.Check className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="flex items-center justify-center bg-rose-600/90 text-white"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onPreviewSuccessSelect(asset, "fail")
+                    }}
+                  >
+                    <LucideIcons.X className="h-4 w-4" />
+                  </button>
                 </span>
               ) : null}
             </Button>

@@ -10,6 +10,8 @@ type CandidateTable = {
 type LoginRow = {
   payload: unknown;
   background_image: string | null;
+  background_location?: string | null;
+  field_mapping?: unknown;
 };
 
 function parseEventKey(payload: unknown): string | null {
@@ -121,8 +123,36 @@ export async function POST(request: Request) {
 
     const schemaName = quoteIdentifier(table.table_schema);
     const tableName = quoteIdentifier(table.table_name);
+
+    const tableColumnsResult = await db.query<{ column_name: string }>(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = $1
+          AND table_name = $2
+      `,
+      [table.table_schema, table.table_name]
+    );
+
+    const tableColumns = new Set(
+      tableColumnsResult.rows
+        .map((row) => row.column_name)
+        .filter((value): value is string => typeof value === "string")
+    );
+
+    const hasBackgroundLocationColumn = tableColumns.has("background_location");
+    const hasFieldMappingColumn = tableColumns.has("field_mapping");
+
+    const selectColumns = ["payload", "background_image"];
+    if (hasBackgroundLocationColumn) {
+      selectColumns.push("background_location");
+    }
+    if (hasFieldMappingColumn) {
+      selectColumns.push("field_mapping");
+    }
+
     const sql = `
-      SELECT payload, background_image
+      SELECT ${selectColumns.join(", ")}
       FROM ${schemaName}.${tableName}
       WHERE content_hash = $1
       LIMIT 1
@@ -154,6 +184,8 @@ export async function POST(request: Request) {
       valid: true,
       payload: record.payload,
       backgroundImage: record.background_image,
+      backgroundLocation: hasBackgroundLocationColumn ? (record.background_location ?? null) : null,
+      fieldMapping: hasFieldMappingColumn ? (record.field_mapping ?? null) : null,
       eventKey,
       eventSchedule,
     });
