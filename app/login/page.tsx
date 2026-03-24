@@ -44,11 +44,15 @@ function extractPayloadItems(payload: unknown): unknown[] {
 
   const source = payload as {
     items?: unknown;
+    payload?: unknown;
     editorState?: {
       items?: unknown;
     };
   };
 
+  if (Array.isArray(source.payload)) {
+    return source.payload;
+  }
   if (Array.isArray(source.items)) return source.items;
   if (Array.isArray(source.editorState?.items)) return source.editorState.items;
   return [];
@@ -126,6 +130,8 @@ function LoginCard() {
         valid?: boolean;
         payload?: unknown;
         backgroundImage?: string | null;
+        backgroundLocation?: string | null;
+        fieldMapping?: unknown;
         eventKey?: string | null;
         eventSchedule?: unknown;
       };
@@ -145,6 +151,8 @@ function LoginCard() {
       localStorage.setItem("scouterName", trimmedScouterName);
       localStorage.setItem("payload", JSON.stringify(result.payload ?? null));
       localStorage.setItem("backgroundImage", result.backgroundImage ?? "");
+      localStorage.setItem("backgroundLocation", result.backgroundLocation ?? "");
+      localStorage.setItem("fieldMapping", JSON.stringify(result.fieldMapping ?? null));
       localStorage.setItem("eventKey", result.eventKey ?? "");
       localStorage.setItem("eventSchedule", JSON.stringify(result.eventSchedule ?? null));
       localStorage.setItem("tbaEventMatchesSimple", JSON.stringify(result.eventSchedule ?? null));
