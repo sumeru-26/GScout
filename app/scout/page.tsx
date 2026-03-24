@@ -2375,14 +2375,16 @@ export default function ScoutPage() {
   }, [])
 
   const setTeleopMode = useCallback(() => {
+    stopAllActiveHolds()
     setControlMode("teleop")
     setAutoTimerStartedAtMs(null)
     setAutoTimerRemainingMs(autoTimerDurationMs)
     recordRuntimeEvent({ type: "mode-change", value: "teleop" })
-  }, [autoTimerDurationMs, recordRuntimeEvent])
+  }, [autoTimerDurationMs, recordRuntimeEvent, stopAllActiveHolds])
 
   const setAutoMode = useCallback(
     (startTimer: boolean) => {
+      stopAllActiveHolds()
       setControlMode("auto")
 
       if (startTimer) {
@@ -2440,6 +2442,7 @@ export default function ScoutPage() {
       getNowMs,
       recordRuntimeEvent,
       scoutAssets,
+      stopAllActiveHolds,
       startPositionsByAssetId,
     ]
   )
