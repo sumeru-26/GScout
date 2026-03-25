@@ -95,6 +95,24 @@ type ButtonSliderAsset = {
   buttonSliderDisplayMode?: "label" | "icon"
 }
 
+type SliderAsset = {
+  id: string
+  type: "slider"
+  tag?: string
+  autoTeleopScope?: "auto" | "teleop"
+  stageParentId?: string
+  stageParentTag?: string
+  x: number
+  y: number
+  width: number
+  height: number
+  label?: string
+  sliderMax?: number
+  sliderMid?: number
+  sliderLeftText?: string
+  sliderRightText?: string
+}
+
 type CoverAsset = {
   id: string
   type: "cover"
@@ -303,6 +321,7 @@ type ScoutAsset =
   | ButtonAsset
   | IconButtonAsset
   | ButtonSliderAsset
+  | SliderAsset
   | CoverAsset
   | InputAsset
   | AutoToggleAsset
@@ -1089,6 +1108,13 @@ function normalizeButtonSliderKind(value: unknown): value is "button-slider" {
   )
 }
 
+function normalizeSliderKind(value: unknown): value is "slider" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return normalized === "slider"
+}
+
 function getButtonSliderSpeedPerSecond(distancePx: number) {
   const clampedDistance = Math.max(0, Math.min(BUTTON_SLIDER_DISTANCE_TO_MAX_SPEED_PX, distancePx))
   const normalizedDistance = clampedDistance / BUTTON_SLIDER_DISTANCE_TO_MAX_SPEED_PX
@@ -1274,6 +1300,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeButtonSliderKind(item.type) ||
         normalizeButtonSliderKind(item.kind) ||
         normalizeButtonSliderKind(item.key) ||
+        normalizeSliderKind(item.type) ||
+        normalizeSliderKind(item.kind) ||
+        normalizeSliderKind(item.key) ||
         normalizeIconButtonKind(item.type) ||
         normalizeIconButtonKind(item.kind) ||
         isTeamSelectAsset(item)
@@ -1321,6 +1350,10 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeButtonSliderKind(item.type) ||
         normalizeButtonSliderKind(item.kind) ||
         normalizeButtonSliderKind(item.key)
+      const isSlider =
+        normalizeSliderKind(item.type) ||
+        normalizeSliderKind(item.kind) ||
+        normalizeSliderKind(item.key)
       const isTeamSelect = isTeamSelectAsset(item)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
       const actionButtonKind = normalizeActionButtonKind(item.type)
@@ -1601,6 +1634,45 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         } satisfies ButtonSliderAsset
       }
 
+      if (isSlider) {
+        return {
+          id,
+          type: "slider",
+          tag: parseAssetTag(item),
+          autoTeleopScope,
+          stageParentId,
+          stageParentTag,
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label.trim()
+              : "Slider",
+          sliderMax: Math.max(
+            1,
+            Math.round(toFiniteNumber(item.sliderMax) ?? toFiniteNumber(item.max) ?? 100)
+          ),
+          sliderMid: Math.max(
+            0,
+            Math.round(toFiniteNumber(item.sliderMid) ?? toFiniteNumber(item.mid) ?? 50)
+          ),
+          sliderLeftText:
+            typeof item.sliderLeftText === "string" && item.sliderLeftText.trim().length > 0
+              ? item.sliderLeftText
+              : typeof item.leftText === "string" && item.leftText.trim().length > 0
+                ? item.leftText
+                : "Low",
+          sliderRightText:
+            typeof item.sliderRightText === "string" && item.sliderRightText.trim().length > 0
+              ? item.sliderRightText
+              : typeof item.rightText === "string" && item.rightText.trim().length > 0
+                ? item.rightText
+                : "High",
+        } satisfies SliderAsset
+      }
+
       if (isIconButton) {
         return {
           id,
@@ -1735,6 +1807,7 @@ export default function ScoutPage() {
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeActionEvent[]>([])
   const [previewHoldDurationsById, setPreviewHoldDurationsById] = useState<Record<string, number>>({})
   const [previewButtonSliderValues, setPreviewButtonSliderValues] = useState<Record<string, number>>({})
+  const [previewSliderValues, setPreviewSliderValues] = useState<Record<string, number>>({})
   const [previewButtonSliderDragById, setPreviewButtonSliderDragById] = useState<
     Record<string, ButtonSliderDragInfo>
   >({})
@@ -2294,6 +2367,7 @@ export default function ScoutPage() {
           | ButtonAsset
           | IconButtonAsset
           | ButtonSliderAsset
+          | SliderAsset
           | InputAsset
           | AutoToggleAsset
           | ToggleSwitchAsset
@@ -2400,6 +2474,7 @@ export default function ScoutPage() {
     setLockedStartPositionByAssetId({})
     setRuntimeEvents([])
     setPreviewButtonSliderValues({})
+    setPreviewSliderValues({})
     setPreviewButtonSliderDragById({})
     setPreviewButtonSliderSpeedById({})
     setPreviewTagStacks({})
@@ -2636,6 +2711,13 @@ export default function ScoutPage() {
     setPreviewTagStacks((previous) => ({
       ...previous,
       [normalizedTag]: [...(previous[normalizedTag] ?? []), value],
+    }))
+  }, [])
+
+  const handlePreviewSliderChange = useCallback((itemId: string, value: number) => {
+    setPreviewSliderValues((previous) => ({
+      ...previous,
+      [itemId]: Math.max(0, Math.round(value)),
     }))
   }, [])
 
@@ -3075,6 +3157,7 @@ export default function ScoutPage() {
     setEditingMatchDraft("")
     setRuntimeEvents([])
     setPreviewButtonSliderValues({})
+    setPreviewSliderValues({})
     setPreviewButtonSliderDragById({})
     setPreviewButtonSliderSpeedById({})
     setPreviewTagStacks({})
@@ -3163,6 +3246,16 @@ export default function ScoutPage() {
       ),
     ]
 
+    const sliderAssetsByTag = scoutAssets.reduce<Record<string, SliderAsset>>((accumulator, asset) => {
+      if (asset.type !== "slider") return accumulator
+      if (typeof asset.tag !== "string" || asset.tag.trim().length === 0) return accumulator
+
+      accumulator[asset.tag] = asset
+      return accumulator
+    }, {})
+
+    const uniqueSliderTags = Object.keys(sliderAssetsByTag)
+
     const uniqueModePrefixedTags = [
       ...new Set(
         [...uniqueButtonAndIconTags, ...uniqueSuccessTags].flatMap((tag) => {
@@ -3182,6 +3275,14 @@ export default function ScoutPage() {
 
     uniqueToggleTags.forEach((tag) => {
       output[tag] = false
+    })
+
+    uniqueSliderTags.forEach((tag) => {
+      const asset = sliderAssetsByTag[tag]
+      const max = Math.max(1, Math.round(asset.sliderMax ?? 100))
+      const defaultValue = Math.max(0, Math.min(max, Math.round(asset.sliderMid ?? 50)))
+      const liveValue = previewSliderValues[asset.id]
+      output[tag] = Math.max(0, Math.min(max, Math.round(liveValue ?? defaultValue)))
     })
 
     uniqueModePrefixedTags.forEach((tag) => {
@@ -3257,6 +3358,7 @@ export default function ScoutPage() {
     teamValue,
     holdStatsByKey,
     movementStatsByKey,
+    previewSliderValues,
     toggleValuesByKey,
     stopAllActiveHolds,
   ])
@@ -3613,6 +3715,68 @@ export default function ScoutPage() {
                   </div>
                 ) : null}
               </Button>
+            )
+          }
+
+          if (asset.type === "slider") {
+            const max = Math.max(1, Math.round(asset.sliderMax ?? 100))
+            const value = Math.max(
+              0,
+              Math.min(
+                max,
+                previewSliderValues[asset.id] ?? Math.max(0, Math.min(max, Math.round(asset.sliderMid ?? 50)))
+              )
+            )
+            const percent = max > 0 ? (value / max) * 100 : 0
+
+            return (
+              <div
+                key={asset.id ?? `slider-${index}`}
+                className="absolute rounded-md border border-white/15 bg-slate-900/90 p-2 transition-all duration-150 ease-out"
+                style={sizedStyle}
+              >
+                <div className="relative flex h-full w-full flex-col justify-end gap-1 pt-4">
+                  <div className="pointer-events-none absolute left-0 top-0 max-w-full truncate text-[10px] font-medium text-white/85">
+                    {asset.label || "Slider"}
+                  </div>
+
+                  <div
+                    className="pointer-events-none absolute top-0 -translate-x-1/2 rounded bg-slate-950/95 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white"
+                    style={{ left: `${percent}%` }}
+                  >
+                    {value}
+                  </div>
+
+                  <input
+                    type="range"
+                    min={0}
+                    max={max}
+                    step={1}
+                    value={value}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                      if (!isPreviewMode) return
+
+                      const nextValue = Number(event.target.value)
+                      const normalizedValue = Number.isFinite(nextValue) ? nextValue : 0
+                      handlePreviewSliderChange(asset.id, normalizedValue)
+
+                      recordRuntimeEvent({
+                        type: "slider-change",
+                        assetId: asset.id,
+                        key: normalizeRuntimeTag(getAssetRuntimeKey(asset)),
+                        value: Math.max(0, Math.round(normalizedValue)),
+                      })
+                    }}
+                    className="h-5 w-full accent-sky-300"
+                    aria-label={asset.label ?? "Slider"}
+                  />
+
+                  <div className="flex items-center justify-between text-[10px] text-white/70">
+                    <span>{asset.sliderLeftText ?? "Low"}</span>
+                    <span>{asset.sliderRightText ?? "High"}</span>
+                  </div>
+                </div>
+              </div>
             )
           }
 
