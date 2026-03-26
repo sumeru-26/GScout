@@ -95,6 +95,24 @@ type ButtonSliderAsset = {
   buttonSliderDisplayMode?: "label" | "icon"
 }
 
+type SliderAsset = {
+  id: string
+  type: "slider"
+  tag?: string
+  autoTeleopScope?: "auto" | "teleop"
+  stageParentId?: string
+  stageParentTag?: string
+  x: number
+  y: number
+  width: number
+  height: number
+  label?: string
+  sliderMax?: number
+  sliderMid?: number
+  sliderLeftText?: string
+  sliderRightText?: string
+}
+
 type CoverAsset = {
   id: string
   type: "cover"
@@ -284,6 +302,9 @@ type BoxBounds = {
 
 type FieldMapping = {
   mapping: Record<string, string>
+  meta?: number[]
+  text?: number[]
+  success?: number[]
 }
 
 type FieldAspectRatio = {
@@ -303,6 +324,7 @@ type ScoutAsset =
   | ButtonAsset
   | IconButtonAsset
   | ButtonSliderAsset
+  | SliderAsset
   | CoverAsset
   | InputAsset
   | AutoToggleAsset
@@ -488,6 +510,21 @@ function normalizePressMode(value: unknown): "tap" | "hold" {
 function normalizeMovementDirection(value: unknown): "left" | "right" {
   if (typeof value !== "string") return "left"
   return value.trim().toLowerCase() === "right" ? "right" : "left"
+}
+
+function parseScoutFormTypeCode(value: unknown): 0 | 1 | 2 {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const rounded = Math.round(value)
+    if (rounded === 1 || rounded === 2) return rounded
+    return 0
+  }
+
+  if (typeof value !== "string") return 0
+  const normalized = value.trim().toLowerCase()
+
+  if (normalized === "qualitative" || normalized === "qual") return 1
+  if (normalized === "pit") return 2
+  return 0
 }
 
 function normalizeIncreaseDirection(value: unknown): "left" | "right" {
@@ -985,7 +1022,7 @@ function resolveStageParentIdsByTag(assets: ScoutAsset[]): ScoutAsset[] {
 function parseFieldMapping(value: unknown): FieldMapping | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
 
-  const source = value as { mapping?: unknown }
+  const source = value as { mapping?: unknown; meta?: unknown; text?: unknown; success?: unknown }
   if (!source.mapping || typeof source.mapping !== "object" || Array.isArray(source.mapping)) {
     return null
   }
@@ -999,8 +1036,20 @@ function parseFieldMapping(value: unknown): FieldMapping | null {
     {}
   )
 
+  const parseIndexArray = (candidate: unknown) => {
+    if (!Array.isArray(candidate)) return undefined
+
+    return candidate
+      .map((entry) => toFiniteNumber(entry))
+      .filter((entry): entry is number => typeof entry === "number")
+      .map((entry) => Math.max(0, Math.round(entry)))
+  }
+
   return {
     mapping,
+    meta: parseIndexArray(source.meta),
+    text: parseIndexArray(source.text),
+    success: parseIndexArray(source.success),
   }
 }
 
@@ -1021,7 +1070,24 @@ function applyFieldMappingToOutput(
   )
 
   return Object.entries(output).reduce<Record<string, number | string | boolean>>((accumulator, [key, value]) => {
-    accumulator[keyToIndex[key] ?? key] = value
+    const mappedDirectKey = keyToIndex[key]
+    if (mappedDirectKey) {
+      accumulator[mappedDirectKey] = value
+      return accumulator
+    }
+
+    const successMatch = /^(.*)\.(success|fail|s|f)$/.exec(key)
+    if (successMatch) {
+      const baseKey = successMatch[1]
+      const mappedBaseKey = keyToIndex[baseKey]
+      if (mappedBaseKey) {
+        const suffix = successMatch[2] === "success" || successMatch[2] === "s" ? "s" : "f"
+        accumulator[`${mappedBaseKey}.${suffix}`] = value
+        return accumulator
+      }
+    }
+
+    accumulator[key] = value
     return accumulator
   }, {})
 }
@@ -1087,6 +1153,13 @@ function normalizeButtonSliderKind(value: unknown): value is "button-slider" {
     normalized === "buttonslider" ||
     normalized === "button_slider"
   )
+}
+
+function normalizeSliderKind(value: unknown): value is "slider" {
+  if (typeof value !== "string") return false
+
+  const normalized = value.toLowerCase()
+  return normalized === "slider"
 }
 
 function getButtonSliderSpeedPerSecond(distancePx: number) {
@@ -1274,6 +1347,9 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeButtonSliderKind(item.type) ||
         normalizeButtonSliderKind(item.kind) ||
         normalizeButtonSliderKind(item.key) ||
+        normalizeSliderKind(item.type) ||
+        normalizeSliderKind(item.kind) ||
+        normalizeSliderKind(item.key) ||
         normalizeIconButtonKind(item.type) ||
         normalizeIconButtonKind(item.kind) ||
         isTeamSelectAsset(item)
@@ -1321,6 +1397,10 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         normalizeButtonSliderKind(item.type) ||
         normalizeButtonSliderKind(item.kind) ||
         normalizeButtonSliderKind(item.key)
+      const isSlider =
+        normalizeSliderKind(item.type) ||
+        normalizeSliderKind(item.kind) ||
+        normalizeSliderKind(item.key)
       const isTeamSelect = isTeamSelectAsset(item)
       const isSwapButton = normalizeSwapButtonKind(item.type) || normalizeSwapButtonKind(item.kind)
       const actionButtonKind = normalizeActionButtonKind(item.type)
@@ -1601,6 +1681,45 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         } satisfies ButtonSliderAsset
       }
 
+      if (isSlider) {
+        return {
+          id,
+          type: "slider",
+          tag: parseAssetTag(item),
+          autoTeleopScope,
+          stageParentId,
+          stageParentTag,
+          x: clampPositionScale(item.x as number),
+          y: clampPositionScale(item.y as number),
+          width: clampSizeScale(item.width as number),
+          height: clampSizeScale(item.height as number),
+          label:
+            typeof item.label === "string" && item.label.trim().length > 0
+              ? item.label.trim()
+              : "Slider",
+          sliderMax: Math.max(
+            1,
+            Math.round(toFiniteNumber(item.sliderMax) ?? toFiniteNumber(item.max) ?? 100)
+          ),
+          sliderMid: Math.max(
+            0,
+            Math.round(toFiniteNumber(item.sliderMid) ?? toFiniteNumber(item.mid) ?? 50)
+          ),
+          sliderLeftText:
+            typeof item.sliderLeftText === "string" && item.sliderLeftText.trim().length > 0
+              ? item.sliderLeftText
+              : typeof item.leftText === "string" && item.leftText.trim().length > 0
+                ? item.leftText
+                : "Low",
+          sliderRightText:
+            typeof item.sliderRightText === "string" && item.sliderRightText.trim().length > 0
+              ? item.sliderRightText
+              : typeof item.rightText === "string" && item.rightText.trim().length > 0
+                ? item.rightText
+                : "High",
+        } satisfies SliderAsset
+      }
+
       if (isIconButton) {
         return {
           id,
@@ -1721,7 +1840,10 @@ export default function ScoutPage() {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
+  const [submitPayloadPreviewJson, setSubmitPayloadPreviewJson] = useState<string>("{}")
   const [fieldMapping, setFieldMapping] = useState<FieldMapping | null>(null)
+  const [isEventTimeTrackingEnabled, setIsEventTimeTrackingEnabled] = useState(false)
+  const [scoutFormTypeCode, setScoutFormTypeCode] = useState<0 | 1 | 2>(0)
   const [fieldAspectRatio, setFieldAspectRatio] = useState<FieldAspectRatio | null>(null)
   const [eventKey, setEventKey] = useState<string>("")
   const [scouterName, setScouterName] = useState<string>("")
@@ -1733,8 +1855,10 @@ export default function ScoutPage() {
   const [eventScheduleMatches, setEventScheduleMatches] = useState<TbaSimpleMatch[]>([])
   const [previewStageParentId, setPreviewStageParentId] = useState<string | null>(null)
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeActionEvent[]>([])
+  const [matchTimelineStartAtMs, setMatchTimelineStartAtMs] = useState<number | null>(null)
   const [previewHoldDurationsById, setPreviewHoldDurationsById] = useState<Record<string, number>>({})
   const [previewButtonSliderValues, setPreviewButtonSliderValues] = useState<Record<string, number>>({})
+  const [previewSliderValues, setPreviewSliderValues] = useState<Record<string, number>>({})
   const [previewButtonSliderDragById, setPreviewButtonSliderDragById] = useState<
     Record<string, ButtonSliderDragInfo>
   >({})
@@ -1918,6 +2042,7 @@ export default function ScoutPage() {
       setScoutAssets([])
       setMirrorLine(null)
       setFieldAspectRatio(null)
+      setIsEventTimeTrackingEnabled(false)
       return
     }
 
@@ -1932,8 +2057,14 @@ export default function ScoutPage() {
       if (normalizedPayload && typeof normalizedPayload === "object") {
         const rootPayload = normalizedPayload as {
           eventKey?: unknown
+          scoutType?: unknown
+          enableEventTimeTracking?: unknown
+          eventTimeTracking?: unknown
           editorState?: {
             eventKey?: unknown
+            scoutType?: unknown
+            enableEventTimeTracking?: unknown
+            eventTimeTracking?: unknown
           }
         }
 
@@ -1944,13 +2075,28 @@ export default function ScoutPage() {
               ? rootPayload.eventKey.trim()
               : ""
 
+        const parsedEventTimeTrackingEnabled =
+          toBoolean(rootPayload.editorState?.enableEventTimeTracking) ??
+          toBoolean(rootPayload.enableEventTimeTracking) ??
+          toBoolean(rootPayload.editorState?.eventTimeTracking) ??
+          toBoolean(rootPayload.eventTimeTracking) ??
+          false
+
+        const parsedScoutFormTypeCode = parseScoutFormTypeCode(
+          rootPayload.editorState?.scoutType ?? rootPayload.scoutType
+        )
+
         setEventKey(parsedEventKey)
+        setIsEventTimeTrackingEnabled(parsedEventTimeTrackingEnabled)
+        setScoutFormTypeCode(parsedScoutFormTypeCode)
       }
     } catch {
       setScoutAssets([])
       setMirrorLine(null)
       setFieldAspectRatio(null)
       setEventKey("")
+      setIsEventTimeTrackingEnabled(false)
+      setScoutFormTypeCode(0)
     }
   }, [])
 
@@ -2294,6 +2440,7 @@ export default function ScoutPage() {
           | ButtonAsset
           | IconButtonAsset
           | ButtonSliderAsset
+          | SliderAsset
           | InputAsset
           | AutoToggleAsset
           | ToggleSwitchAsset
@@ -2399,7 +2546,9 @@ export default function ScoutPage() {
     setHiddenStartPositionIds({})
     setLockedStartPositionByAssetId({})
     setRuntimeEvents([])
+    setMatchTimelineStartAtMs(null)
     setPreviewButtonSliderValues({})
+    setPreviewSliderValues({})
     setPreviewButtonSliderDragById({})
     setPreviewButtonSliderSpeedById({})
     setPreviewTagStacks({})
@@ -2486,6 +2635,7 @@ export default function ScoutPage() {
         const startedAtMs = Date.now()
         setAutoTimerStartedAtMs(startedAtMs)
         setAutoTimerRemainingMs(autoTimerDurationMs)
+        setMatchTimelineStartAtMs(getNowMs())
 
         setHiddenStartPositionIds((previous) => {
           const next = { ...previous }
@@ -2620,7 +2770,7 @@ export default function ScoutPage() {
     recordRuntimeEvent({
       type: "tap",
       assetId,
-      key: rawTag ?? tag,
+      key: prefixedTag,
       atMs,
       valueDelta: repeatCount,
     })
@@ -2636,6 +2786,13 @@ export default function ScoutPage() {
     setPreviewTagStacks((previous) => ({
       ...previous,
       [normalizedTag]: [...(previous[normalizedTag] ?? []), value],
+    }))
+  }, [])
+
+  const handlePreviewSliderChange = useCallback((itemId: string, value: number) => {
+    setPreviewSliderValues((previous) => ({
+      ...previous,
+      [itemId]: Math.max(0, Math.round(value)),
     }))
   }, [])
 
@@ -2977,15 +3134,19 @@ export default function ScoutPage() {
       const runtimeKey = normalizeRuntimeTag(getAssetRuntimeKey(asset))
       if (!runtimeKey) return
 
+      const prefixedRuntimeKey = toModePrefixedTag(runtimeKey, controlMode)
+      const increment = asset.increment ?? 1
+
       pushTagToStack(`${runtimeKey}.${result}`, 1, asset.id, runtimeKey)
       recordRuntimeEvent({
         type: "success-select",
         assetId: asset.id,
-        key: runtimeKey,
+        key: prefixedRuntimeKey,
         value: result,
+        valueDelta: increment,
       })
     },
-    [pushTagToStack, recordRuntimeEvent]
+    [controlMode, pushTagToStack, recordRuntimeEvent]
   )
 
   const handleStartPositionTap = useCallback(
@@ -3074,7 +3235,9 @@ export default function ScoutPage() {
     setEditingMatchKey(null)
     setEditingMatchDraft("")
     setRuntimeEvents([])
+    setMatchTimelineStartAtMs(null)
     setPreviewButtonSliderValues({})
+    setPreviewSliderValues({})
     setPreviewButtonSliderDragById({})
     setPreviewButtonSliderSpeedById({})
     setPreviewTagStacks({})
@@ -3163,6 +3326,16 @@ export default function ScoutPage() {
       ),
     ]
 
+    const sliderAssetsByTag = scoutAssets.reduce<Record<string, SliderAsset>>((accumulator, asset) => {
+      if (asset.type !== "slider") return accumulator
+      if (typeof asset.tag !== "string" || asset.tag.trim().length === 0) return accumulator
+
+      accumulator[asset.tag] = asset
+      return accumulator
+    }, {})
+
+    const uniqueSliderTags = Object.keys(sliderAssetsByTag)
+
     const uniqueModePrefixedTags = [
       ...new Set(
         [...uniqueButtonAndIconTags, ...uniqueSuccessTags].flatMap((tag) => {
@@ -3184,6 +3357,14 @@ export default function ScoutPage() {
       output[tag] = false
     })
 
+    uniqueSliderTags.forEach((tag) => {
+      const asset = sliderAssetsByTag[tag]
+      const max = Math.max(1, Math.round(asset.sliderMax ?? 100))
+      const defaultValue = Math.max(0, Math.min(max, Math.round(asset.sliderMid ?? 50)))
+      const liveValue = previewSliderValues[asset.id]
+      output[tag] = Math.max(0, Math.min(max, Math.round(liveValue ?? defaultValue)))
+    })
+
     uniqueModePrefixedTags.forEach((tag) => {
       output[tag] = tagStack.filter((stackTag) => stackTag === tag).length
     })
@@ -3196,41 +3377,185 @@ export default function ScoutPage() {
       output[tag] = toggleValuesByKey[tag] ?? false
     })
 
-    Object.entries(holdStatsByKey).forEach(([key, stats]) => {
-      output[key] = Math.round(stats.totalMs)
-    })
-
-    Object.entries(movementStatsByKey).forEach(([key, stats]) => {
-      output[`${key}.movementMs`] = Math.round(stats.totalMs)
-      output[`${key}.movementToggles`] = stats.toggleCount
-    })
-
-    const latestStartPosition = Object.values(startPositionsByAssetId).reduce<
-      { xRatio: number; yRatio: number; selectedAtMs: number } | null
-    >((latest, candidate) => {
-      if (!latest) return candidate
-      return candidate.selectedAtMs > latest.selectedAtMs ? candidate : latest
-    }, null)
-
-    if (latestStartPosition) {
-      output["start.x"] = Number(toXScaleFromRatio(latestStartPosition.xRatio).toFixed(2))
-      output["start.y"] = Number(toYScaleFromRatio(latestStartPosition.yRatio).toFixed(2))
-    }
-
     output.match = selectedMatchNumber ?? 0
     output.team = teamValue
     output.scouter = scouterName
 
-    const payloadObject = {
-      ...output,
-      match: selectedMatchNumber ?? 0,
-      team: teamValue,
-      scouter: scouterName,
+    const startPositionAssets = scoutAssets.filter(
+      (asset): asset is StartPositionAsset => asset.type === "start-position"
+    )
+
+    const firstSelectedStartPosition = startPositionAssets
+      .map((asset) => {
+        const locked = lockedStartPositionByAssetId[asset.id]
+        if (
+          locked &&
+          typeof locked.xRatio === "number" &&
+          Number.isFinite(locked.xRatio) &&
+          typeof locked.yRatio === "number" &&
+          Number.isFinite(locked.yRatio)
+        ) {
+          return { xRatio: locked.xRatio, yRatio: locked.yRatio }
+        }
+
+        const live = startPositionsByAssetId[asset.id]
+        if (
+          live &&
+          typeof live.xRatio === "number" &&
+          Number.isFinite(live.xRatio) &&
+          typeof live.yRatio === "number" &&
+          Number.isFinite(live.yRatio)
+        ) {
+          return { xRatio: live.xRatio, yRatio: live.yRatio }
+        }
+
+        return null
+      })
+      .find((position) => position !== null)
+
+    const robotPositionPayload =
+      startPositionAssets.length > 0 && firstSelectedStartPosition
+        ? [
+            Number(firstSelectedStartPosition.xRatio.toFixed(6)),
+            Number(firstSelectedStartPosition.yRatio.toFixed(6)),
+          ]
+        : []
+
+    const scoutTypePayload: [0 | 1 | 2] = [scoutFormTypeCode]
+
+    const mapping = fieldMapping?.mapping ?? {}
+    const tagToId = Object.entries(mapping).reduce<Record<string, string>>((accumulator, [id, tag]) => {
+      accumulator[tag] = id
+      return accumulator
+    }, {})
+
+    let finalPayloadObject: unknown
+
+    if (isEventTimeTrackingEnabled && fieldMapping) {
+      const timelineEntries: string[] = []
+      const successIds = new Set((fieldMapping.success ?? []).map((id) => String(id)))
+      const timelineStartAtMs = matchTimelineStartAtMs
+      const timelineStopAtMs = getNowMs()
+      const sortedRuntimeEvents = runtimeEvents.slice().sort((left, right) => left.atMs - right.atMs)
+
+      if (typeof timelineStartAtMs === "number") {
+        sortedRuntimeEvents.forEach((event) => {
+          if (event.atMs < timelineStartAtMs) return
+          if (event.atMs > timelineStopAtMs) return
+          if (typeof event.key !== "string" || event.key.trim().length === 0) return
+
+          const eventKey = event.key.trim()
+          const mappedId = tagToId[eventKey]
+          if (!mappedId) return
+
+          const timeCs = Math.max(0, Math.round((event.atMs - timelineStartAtMs) / 10))
+
+          if (event.type === "tap") {
+            if (eventKey.endsWith(".success") || eventKey.endsWith(".fail")) return
+            const value = Math.max(0, Math.round(event.valueDelta ?? 0))
+            if (value <= 0) return
+            timelineEntries.push(`${mappedId}:${timeCs}:${value}`)
+            return
+          }
+
+          if (event.type === "hold-end") {
+            const holdValueCs = Math.max(0, Math.round((event.durationMs ?? 0) / 10))
+            if (holdValueCs <= 0) return
+            timelineEntries.push(`${mappedId}:${timeCs}:${holdValueCs}`)
+            return
+          }
+
+          if (event.type === "success-select") {
+            const value = Math.max(1, Math.round(event.valueDelta ?? 1))
+            const suffix = event.value === "success" ? "s" : event.value === "fail" ? "f" : null
+            if (suffix && successIds.has(mappedId)) {
+              timelineEntries.push(`${mappedId}:${timeCs}:${value}:${suffix}`)
+              return
+            }
+            timelineEntries.push(`${mappedId}:${timeCs}:${value}`)
+          }
+        })
+      }
+
+      const textValues = (fieldMapping.text ?? []).map((id) => {
+        const mappedTag = mapping[String(id)]
+        if (!mappedTag) return ""
+        const textValue = inputValuesByKey[mappedTag]
+        return typeof textValue === "string" ? textValue : ""
+      })
+
+      const metaValues = (fieldMapping.meta ?? []).map((id) => {
+        const mappedTag = mapping[String(id)]
+        if (!mappedTag) return 0
+
+        const toggleValue = toggleValuesByKey[mappedTag]
+        if (typeof toggleValue === "boolean") {
+          return toggleValue ? 1 : 0
+        }
+
+        const sliderAsset = sliderAssetsByTag[mappedTag]
+        if (sliderAsset) {
+          const max = Math.max(1, Math.round(sliderAsset.sliderMax ?? 100))
+          const fallbackValue = Math.max(0, Math.min(max, Math.round(sliderAsset.sliderMid ?? 50)))
+          const sliderValue = previewSliderValues[sliderAsset.id]
+          return Math.max(0, Math.min(max, Math.round(sliderValue ?? fallbackValue)))
+        }
+
+        const numericOutput = output[mappedTag]
+        if (typeof numericOutput === "number" && Number.isFinite(numericOutput)) {
+          return Math.round(numericOutput)
+        }
+
+        if (typeof numericOutput === "boolean") {
+          return numericOutput ? 1 : 0
+        }
+
+        return 0
+      })
+
+      const parsedTeamNumber = toNonNegativeWholeNumber(teamValue)
+
+      finalPayloadObject = {
+        t: timelineEntries.join(","),
+        s: textValues.join("|"),
+        b: metaValues,
+        d: [selectedMatchNumber ?? 0, parsedTeamNumber ?? teamValue, scouterName],
+        p: robotPositionPayload,
+        ft: scoutTypePayload,
+      }
+    } else {
+      const payloadObject = {
+        ...output,
+        match: selectedMatchNumber ?? 0,
+        team: teamValue,
+        scouter: scouterName,
+      }
+
+      const mappedPayload = applyFieldMappingToOutput(payloadObject, fieldMapping)
+      finalPayloadObject = {
+        ...mappedPayload,
+        p: robotPositionPayload,
+        ft: scoutTypePayload,
+      }
     }
 
-    const mappedPayloadObject = applyFieldMappingToOutput(payloadObject, fieldMapping)
-    const payloadJson = JSON.stringify(mappedPayloadObject)
+    const scoutTypeLabel = scoutFormTypeCode === 1 ? "qualitative" : scoutFormTypeCode === 2 ? "pit" : "match"
+    const previewPayloadObject = {
+      ...output,
+      robotPosition:
+        robotPositionPayload.length === 2
+          ? { x: robotPositionPayload[0], y: robotPositionPayload[1] }
+          : null,
+      scoutType: {
+        code: scoutFormTypeCode,
+        label: scoutTypeLabel,
+      },
+    }
+
+    const payloadJson = JSON.stringify(finalPayloadObject)
+    const previewPayloadJson = JSON.stringify(previewPayloadObject, null, 2)
     setSubmitPayloadJson(payloadJson)
+    setSubmitPayloadPreviewJson(previewPayloadJson)
 
     try {
       const qrDataUrl = await QRCode.toDataURL(payloadJson, {
@@ -3244,19 +3569,24 @@ export default function ScoutPage() {
 
     setIsSubmitDialogOpen(true)
 
-    console.log("[ScoutPage] submit payload:", mappedPayloadObject)
+    console.log("[ScoutPage] submit payload:", finalPayloadObject)
   }, [
     TEAM_SELECT_TAG,
     fieldMapping,
+    getNowMs,
     inputValuesByKey,
+    isEventTimeTrackingEnabled,
+    matchTimelineStartAtMs,
+    runtimeEvents,
     scoutAssets,
+    scoutFormTypeCode,
     scouterName,
     selectedMatchNumber,
     startPositionsByAssetId,
     tagStack,
     teamValue,
-    holdStatsByKey,
-    movementStatsByKey,
+    lockedStartPositionByAssetId,
+    previewSliderValues,
     toggleValuesByKey,
     stopAllActiveHolds,
   ])
@@ -3613,6 +3943,68 @@ export default function ScoutPage() {
                   </div>
                 ) : null}
               </Button>
+            )
+          }
+
+          if (asset.type === "slider") {
+            const max = Math.max(1, Math.round(asset.sliderMax ?? 100))
+            const value = Math.max(
+              0,
+              Math.min(
+                max,
+                previewSliderValues[asset.id] ?? Math.max(0, Math.min(max, Math.round(asset.sliderMid ?? 50)))
+              )
+            )
+            const percent = max > 0 ? (value / max) * 100 : 0
+
+            return (
+              <div
+                key={asset.id ?? `slider-${index}`}
+                className="absolute rounded-md border border-white/15 bg-slate-900/90 p-2 transition-all duration-150 ease-out"
+                style={sizedStyle}
+              >
+                <div className="relative flex h-full w-full flex-col justify-end gap-1 pt-4">
+                  <div className="pointer-events-none absolute left-0 top-0 max-w-full truncate text-[10px] font-medium text-white/85">
+                    {asset.label || "Slider"}
+                  </div>
+
+                  <div
+                    className="pointer-events-none absolute top-0 -translate-x-1/2 rounded bg-slate-950/95 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white"
+                    style={{ left: `${percent}%` }}
+                  >
+                    {value}
+                  </div>
+
+                  <input
+                    type="range"
+                    min={0}
+                    max={max}
+                    step={1}
+                    value={value}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                      if (!isPreviewMode) return
+
+                      const nextValue = Number(event.target.value)
+                      const normalizedValue = Number.isFinite(nextValue) ? nextValue : 0
+                      handlePreviewSliderChange(asset.id, normalizedValue)
+
+                      recordRuntimeEvent({
+                        type: "slider-change",
+                        assetId: asset.id,
+                        key: normalizeRuntimeTag(getAssetRuntimeKey(asset)),
+                        value: Math.max(0, Math.round(normalizedValue)),
+                      })
+                    }}
+                    className="h-5 w-full accent-sky-300"
+                    aria-label={asset.label ?? "Slider"}
+                  />
+
+                  <div className="flex items-center justify-between text-[10px] text-white/70">
+                    <span>{asset.sliderLeftText ?? "Low"}</span>
+                    <span>{asset.sliderRightText ?? "High"}</span>
+                  </div>
+                </div>
+              </div>
             )
           }
 
@@ -4296,7 +4688,9 @@ export default function ScoutPage() {
               <div className="text-muted-foreground text-sm">Unable to generate QR code.</div>
             )}
           </div>
-          <p className="text-muted-foreground break-all text-xs">{submitPayloadJson}</p>
+          <pre className="text-muted-foreground max-h-56 overflow-auto rounded-md bg-muted/30 p-3 text-xs whitespace-pre-wrap">
+            {submitPayloadPreviewJson}
+          </pre>
           <DialogFooter showCloseButton />
         </DialogContent>
       </Dialog>
