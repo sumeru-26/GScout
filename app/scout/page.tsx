@@ -512,6 +512,21 @@ function normalizeMovementDirection(value: unknown): "left" | "right" {
   return value.trim().toLowerCase() === "right" ? "right" : "left"
 }
 
+function parseScoutFormTypeCode(value: unknown): 0 | 1 | 2 {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const rounded = Math.round(value)
+    if (rounded === 1 || rounded === 2) return rounded
+    return 0
+  }
+
+  if (typeof value !== "string") return 0
+  const normalized = value.trim().toLowerCase()
+
+  if (normalized === "qualitative" || normalized === "qual") return 1
+  if (normalized === "pit") return 2
+  return 0
+}
+
 function normalizeIncreaseDirection(value: unknown): "left" | "right" {
   if (typeof value !== "string") return "right"
   return value.trim().toLowerCase() === "left" ? "left" : "right"
@@ -1825,8 +1840,10 @@ export default function ScoutPage() {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
   const [submitQrCodeUrl, setSubmitQrCodeUrl] = useState<string | null>(null)
   const [submitPayloadJson, setSubmitPayloadJson] = useState<string>("{}")
+  const [submitPayloadPreviewJson, setSubmitPayloadPreviewJson] = useState<string>("{}")
   const [fieldMapping, setFieldMapping] = useState<FieldMapping | null>(null)
   const [isEventTimeTrackingEnabled, setIsEventTimeTrackingEnabled] = useState(false)
+  const [scoutFormTypeCode, setScoutFormTypeCode] = useState<0 | 1 | 2>(0)
   const [fieldAspectRatio, setFieldAspectRatio] = useState<FieldAspectRatio | null>(null)
   const [eventKey, setEventKey] = useState<string>("")
   const [scouterName, setScouterName] = useState<string>("")
@@ -2040,10 +2057,12 @@ export default function ScoutPage() {
       if (normalizedPayload && typeof normalizedPayload === "object") {
         const rootPayload = normalizedPayload as {
           eventKey?: unknown
+          scoutType?: unknown
           enableEventTimeTracking?: unknown
           eventTimeTracking?: unknown
           editorState?: {
             eventKey?: unknown
+            scoutType?: unknown
             enableEventTimeTracking?: unknown
             eventTimeTracking?: unknown
           }
@@ -2063,8 +2082,13 @@ export default function ScoutPage() {
           toBoolean(rootPayload.eventTimeTracking) ??
           false
 
+        const parsedScoutFormTypeCode = parseScoutFormTypeCode(
+          rootPayload.editorState?.scoutType ?? rootPayload.scoutType
+        )
+
         setEventKey(parsedEventKey)
         setIsEventTimeTrackingEnabled(parsedEventTimeTrackingEnabled)
+        setScoutFormTypeCode(parsedScoutFormTypeCode)
       }
     } catch {
       setScoutAssets([])
@@ -2072,6 +2096,7 @@ export default function ScoutPage() {
       setFieldAspectRatio(null)
       setEventKey("")
       setIsEventTimeTrackingEnabled(false)
+      setScoutFormTypeCode(0)
     }
   }, [])
 
@@ -3356,6 +3381,48 @@ export default function ScoutPage() {
     output.team = teamValue
     output.scouter = scouterName
 
+    const startPositionAssets = scoutAssets.filter(
+      (asset): asset is StartPositionAsset => asset.type === "start-position"
+    )
+
+    const firstSelectedStartPosition = startPositionAssets
+      .map((asset) => {
+        const locked = lockedStartPositionByAssetId[asset.id]
+        if (
+          locked &&
+          typeof locked.xRatio === "number" &&
+          Number.isFinite(locked.xRatio) &&
+          typeof locked.yRatio === "number" &&
+          Number.isFinite(locked.yRatio)
+        ) {
+          return { xRatio: locked.xRatio, yRatio: locked.yRatio }
+        }
+
+        const live = startPositionsByAssetId[asset.id]
+        if (
+          live &&
+          typeof live.xRatio === "number" &&
+          Number.isFinite(live.xRatio) &&
+          typeof live.yRatio === "number" &&
+          Number.isFinite(live.yRatio)
+        ) {
+          return { xRatio: live.xRatio, yRatio: live.yRatio }
+        }
+
+        return null
+      })
+      .find((position) => position !== null)
+
+    const robotPositionPayload =
+      startPositionAssets.length > 0 && firstSelectedStartPosition
+        ? [
+            Number(firstSelectedStartPosition.xRatio.toFixed(6)),
+            Number(firstSelectedStartPosition.yRatio.toFixed(6)),
+          ]
+        : []
+
+    const scoutTypePayload: [0 | 1 | 2] = [scoutFormTypeCode]
+
     const mapping = fieldMapping?.mapping ?? {}
     const tagToId = Object.entries(mapping).reduce<Record<string, string>>((accumulator, [id, tag]) => {
       accumulator[tag] = id
@@ -3453,6 +3520,8 @@ export default function ScoutPage() {
         s: textValues.join("|"),
         b: metaValues,
         d: [selectedMatchNumber ?? 0, parsedTeamNumber ?? teamValue, scouterName],
+        p: robotPositionPayload,
+        ft: scoutTypePayload,
       }
     } else {
       const payloadObject = {
@@ -3462,11 +3531,31 @@ export default function ScoutPage() {
         scouter: scouterName,
       }
 
-      finalPayloadObject = applyFieldMappingToOutput(payloadObject, fieldMapping)
+      const mappedPayload = applyFieldMappingToOutput(payloadObject, fieldMapping)
+      finalPayloadObject = {
+        ...mappedPayload,
+        p: robotPositionPayload,
+        ft: scoutTypePayload,
+      }
+    }
+
+    const scoutTypeLabel = scoutFormTypeCode === 1 ? "qualitative" : scoutFormTypeCode === 2 ? "pit" : "match"
+    const previewPayloadObject = {
+      ...output,
+      robotPosition:
+        robotPositionPayload.length === 2
+          ? { x: robotPositionPayload[0], y: robotPositionPayload[1] }
+          : null,
+      scoutType: {
+        code: scoutFormTypeCode,
+        label: scoutTypeLabel,
+      },
     }
 
     const payloadJson = JSON.stringify(finalPayloadObject)
+    const previewPayloadJson = JSON.stringify(previewPayloadObject, null, 2)
     setSubmitPayloadJson(payloadJson)
+    setSubmitPayloadPreviewJson(previewPayloadJson)
 
     try {
       const qrDataUrl = await QRCode.toDataURL(payloadJson, {
@@ -3490,10 +3579,13 @@ export default function ScoutPage() {
     matchTimelineStartAtMs,
     runtimeEvents,
     scoutAssets,
+    scoutFormTypeCode,
     scouterName,
     selectedMatchNumber,
+    startPositionsByAssetId,
     tagStack,
     teamValue,
+    lockedStartPositionByAssetId,
     previewSliderValues,
     toggleValuesByKey,
     stopAllActiveHolds,
@@ -4596,7 +4688,9 @@ export default function ScoutPage() {
               <div className="text-muted-foreground text-sm">Unable to generate QR code.</div>
             )}
           </div>
-          <p className="text-muted-foreground break-all text-xs">{submitPayloadJson}</p>
+          <pre className="text-muted-foreground max-h-56 overflow-auto rounded-md bg-muted/30 p-3 text-xs whitespace-pre-wrap">
+            {submitPayloadPreviewJson}
+          </pre>
           <DialogFooter showCloseButton />
         </DialogContent>
       </Dialog>
