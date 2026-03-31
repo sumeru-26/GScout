@@ -34,6 +34,11 @@ type ButtonAsset = {
   type: "button"
   buttonKind: "button" | "swap" | "undo" | "redo" | "submit" | "reset"
   tag?: string
+  teamSelectRootTag?: string
+  teamSelectLinkEachTeamToStage?: boolean
+  teamSelectAddGeneralComments?: boolean
+  teamSelectShowStageWithoutSelection?: boolean
+  teamSelectDefaultTab?: TeamStageTab
   autoTeleopScope?: "auto" | "teleop"
   increment?: number
   buttonPressMode?: "tap" | "hold"
@@ -129,6 +134,7 @@ type InputAsset = {
   id: string
   type: "input"
   tag?: string
+  teamStageScope?: TeamStageScope
   autoTeleopScope?: "auto" | "teleop"
   stageParentId?: string
   stageParentTag?: string
@@ -169,6 +175,7 @@ type ToggleSwitchAsset = {
   height: number
   label?: string
   value: boolean
+  toggleStyle?: "switch" | "box"
   textAlign?: "left" | "center" | "right"
   textSize?: number
 }
@@ -270,11 +277,35 @@ type TbaSimpleMatch = {
   redTeamKeys: string[]
 }
 
+type TbaEventTeamInfo = {
+  teamNumber: string
+  displayName: string
+}
+
+type PitQuestionType = "text" | "slider" | "all-that-apply" | "single-select"
+
+type PitQuestion = {
+  id: string
+  text: string
+  type: PitQuestionType
+  options: string[]
+  sliderMin: number
+  sliderMax: number
+  sliderLeftText: string
+  sliderRightText: string
+}
+
+type PitAnswerValue = string | number | number[] | null
+
 type TeamSelectOption = {
-  value: string
+  value: TeamStageTab
   label: string
   colorClassName: string
 }
+
+type TeamStageBaseTab = "b1" | "b2" | "b3" | "r1" | "r2" | "r3"
+type TeamStageTab = TeamStageBaseTab | "general"
+type TeamStageScope = "teams" | "general"
 
 type TagStackAction = {
   tag: string
@@ -337,6 +368,7 @@ type ScoutAsset =
 type ControlMode = "auto" | "teleop"
 
 const AUTO_TIMER_DURATION_MS = 25_000
+const TEAM_STAGE_BASE_TABS: readonly TeamStageBaseTab[] = ["b1", "b2", "b3", "r1", "r2", "r3"]
 const TOGGLE_SIZE = { width: 52, height: 28 } as const
 const LOG_SIZE = { width: 280, height: 120 } as const
 const BUTTON_SLIDER_DRAG_DEADZONE_PX = 6
@@ -488,6 +520,10 @@ function normalizeToggleSwitchKind(value: unknown): value is "toggle-switch" {
   )
 }
 
+function normalizeToggleStyle(value: unknown): "switch" | "box" {
+  return value === "box" ? "box" : "switch"
+}
+
 function normalizeStartPositionKind(value: unknown): value is "start-position" {
   if (typeof value !== "string") return false
 
@@ -525,6 +561,126 @@ function parseScoutFormTypeCode(value: unknown): 0 | 1 | 2 {
   if (normalized === "qualitative" || normalized === "qual") return 1
   if (normalized === "pit") return 2
   return 0
+}
+
+function normalizePitQuestionType(value: unknown): PitQuestionType {
+  if (typeof value !== "string") return "text"
+
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "slider") return "slider"
+  if (normalized === "all-that-apply" || normalized === "allthatapply" || normalized === "multi-select") {
+    return "all-that-apply"
+  }
+  if (normalized === "single-select" || normalized === "singleselect" || normalized === "multiple-choice") {
+    return "single-select"
+  }
+
+  return "text"
+}
+
+function normalizePitQuestions(payload: unknown): PitQuestion[] {
+  if (!payload || typeof payload !== "object") return []
+
+  const source = payload as {
+    postMatchQuestions?: unknown
+    editorState?: {
+      postMatchQuestions?: unknown
+    }
+  }
+
+  const rawQuestions =
+    Array.isArray(source.editorState?.postMatchQuestions)
+      ? source.editorState.postMatchQuestions
+      : Array.isArray(source.postMatchQuestions)
+        ? source.postMatchQuestions
+        : []
+
+  return rawQuestions
+    .filter((question): question is Record<string, unknown> => Boolean(question && typeof question === "object"))
+    .map((question, index) => {
+      const sliderMin =
+        toFiniteNumber(question.sliderMin) ??
+        toFiniteNumber(question.slider_min) ??
+        0
+      const sliderMaxCandidate =
+        toFiniteNumber(question.sliderMax) ??
+        toFiniteNumber(question.slider_max) ??
+        10
+      const sliderMax = sliderMaxCandidate > sliderMin ? sliderMaxCandidate : sliderMin + 1
+
+      const options = Array.isArray(question.options)
+        ? question.options
+            .filter((option): option is string => typeof option === "string")
+            .map((option) => option.trim())
+            .filter((option) => option.length > 0)
+        : []
+
+      return {
+        id:
+          typeof question.id === "string" && question.id.trim().length > 0
+            ? question.id.trim()
+            : `pit-question-${index + 1}`,
+        text:
+          typeof question.text === "string" && question.text.trim().length > 0
+            ? question.text.trim()
+            : `Question ${index + 1}`,
+        type: normalizePitQuestionType(question.type),
+        options,
+        sliderMin,
+        sliderMax,
+        sliderLeftText:
+          typeof question.sliderLeftText === "string" && question.sliderLeftText.trim().length > 0
+            ? question.sliderLeftText.trim()
+            : "Low",
+        sliderRightText:
+          typeof question.sliderRightText === "string" && question.sliderRightText.trim().length > 0
+            ? question.sliderRightText.trim()
+            : "High",
+      } satisfies PitQuestion
+    })
+}
+
+function getDefaultPitAnswer(question: PitQuestion): PitAnswerValue {
+  if (question.type === "slider") return Math.round(question.sliderMin)
+  if (question.type === "all-that-apply") return []
+  if (question.type === "single-select") return null
+  return ""
+}
+
+function encodePitRawText(value: string) {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/=/g, "\\=")
+    .replace(/;/g, "\\;")
+}
+
+function encodePitQuestionAnswer(question: PitQuestion, answer: PitAnswerValue): string {
+  if (question.type === "slider") {
+    const rawSlider = typeof answer === "number" && Number.isFinite(answer) ? answer : question.sliderMin
+    const sliderValue = Math.round(Math.max(question.sliderMin, Math.min(question.sliderMax, rawSlider)))
+    return `s:${sliderValue}`
+  }
+
+  if (question.type === "all-that-apply") {
+    const selectedIndexes = Array.isArray(answer)
+      ? answer
+          .filter((entry): entry is number => typeof entry === "number" && Number.isInteger(entry))
+          .filter((entry) => entry >= 0 && entry < question.options.length)
+      : []
+
+    return `m:${selectedIndexes.join(",")}`
+  }
+
+  if (question.type === "single-select") {
+    const selectedIndex =
+      typeof answer === "number" && Number.isInteger(answer) && answer >= 0 && answer < question.options.length
+        ? answer
+        : -1
+    return `o:${selectedIndex}`
+  }
+
+  const textValue = typeof answer === "string" ? answer : ""
+  return `t:${encodePitRawText(textValue)}`
 }
 
 function normalizeIncreaseDirection(value: unknown): "left" | "right" {
@@ -683,6 +839,39 @@ function normalizeEventScheduleMatches(source: unknown): TbaSimpleMatch[] {
     .filter((match) => match.matchNumber >= 0)
 }
 
+function normalizeEventTeamsByKey(source: unknown): Record<string, TbaEventTeamInfo> {
+  if (!Array.isArray(source)) return {}
+
+  return source
+    .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate && typeof candidate === "object"))
+    .reduce<Record<string, TbaEventTeamInfo>>((accumulator, candidate) => {
+      const normalizedTeamKey = normalizeTeamKey(candidate.key)
+      if (!normalizedTeamKey) return accumulator
+
+      const parsedTeamNumber =
+        typeof candidate.team_number === "number" && Number.isFinite(candidate.team_number)
+          ? String(Math.round(candidate.team_number))
+          : teamKeyToTeamNumber(normalizedTeamKey)
+
+      const nickname =
+        typeof candidate.nickname === "string" && candidate.nickname.trim().length > 0
+          ? candidate.nickname.trim()
+          : null
+
+      const fullName =
+        typeof candidate.name === "string" && candidate.name.trim().length > 0
+          ? candidate.name.trim()
+          : null
+
+      accumulator[normalizedTeamKey] = {
+        teamNumber: parsedTeamNumber,
+        displayName: nickname ?? fullName ?? parsedTeamNumber,
+      }
+
+      return accumulator
+    }, {})
+}
+
 function normalizeMatchSelectKind(value: unknown): value is "match-select" {
   if (typeof value !== "string") return false
 
@@ -692,6 +881,45 @@ function normalizeMatchSelectKind(value: unknown): value is "match-select" {
 
 function normalizeTeamSelectTag(value: unknown): value is "team-select" {
   return typeof value === "string" && value.trim().toLowerCase() === "team-select"
+}
+
+function normalizeTeamStageTab(value: unknown): TeamStageTab | undefined {
+  if (typeof value !== "string") return undefined
+
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "b1" || normalized === "b2" || normalized === "b3") return normalized
+  if (normalized === "r1" || normalized === "r2" || normalized === "r3") return normalized
+  if (normalized === "general") return "general"
+
+  return undefined
+}
+
+function getTeamStageTabs(addGeneralComments: boolean): TeamStageTab[] {
+  return addGeneralComments ? [...TEAM_STAGE_BASE_TABS, "general"] : [...TEAM_STAGE_BASE_TABS]
+}
+
+function normalizeTeamStageScope(value: unknown): TeamStageScope | undefined {
+  if (typeof value !== "string") return undefined
+
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "general") return "general"
+  if (normalized === "teams") return "teams"
+  return undefined
+}
+
+function stripTeamStageSuffix(tag: string) {
+  return tag.trim().replace(/-(b[1-3]|r[1-3]|general)$/i, "")
+}
+
+function getTeamStageTagSuffix(tag: string): TeamStageTab | undefined {
+  const match = /-(b[1-3]|r[1-3]|general)$/i.exec(tag.trim())
+  if (!match) return undefined
+
+  return normalizeTeamStageTab(match[1])
+}
+
+function getTeamStageScopedKey(baseKey: string, teamSelectRootId: string, selectedTab: TeamStageTab) {
+  return `${baseKey}::${teamSelectRootId}::${selectedTab}`
 }
 
 function isTeamSelectAsset(item: Record<string, unknown>) {
@@ -999,6 +1227,17 @@ function resolveStageParentIdsByTag(assets: ScoutAsset[]): ScoutAsset[] {
     if (!normalizedTag) return
     if (!tagToAssetId.has(normalizedTag)) {
       tagToAssetId.set(normalizedTag, asset.id)
+    }
+
+    if (
+      asset.type === "button" &&
+      typeof asset.teamSelectRootTag === "string" &&
+      asset.teamSelectRootTag.trim().length > 0
+    ) {
+      const normalizedTeamSelectRootTag = asset.teamSelectRootTag.trim().toLowerCase()
+      if (!tagToAssetId.has(normalizedTeamSelectRootTag)) {
+        tagToAssetId.set(normalizedTeamSelectRootTag, asset.id)
+      }
     }
   })
 
@@ -1426,6 +1665,23 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         toFiniteNumber(item.successPopoverOffsetY) ??
         toFiniteNumber(item.success_popover_offset_y) ??
         0
+      const parsedAssetTag = parseAssetTag(item)
+      const parsedTagSuffix = parsedAssetTag ? getTeamStageTagSuffix(parsedAssetTag) : undefined
+      const parsedTeamStageScope =
+        normalizeTeamStageScope(item.teamStageScope ?? item.team_stage_scope) ??
+        (parsedTagSuffix === "general" ? "general" : undefined)
+      const teamSelectRootTag = isTeamSelect ? parsedAssetTag : undefined
+      const teamSelectLinkEachTeamToStage =
+        parseStageFlag(item.linkEachTeamToStage) ||
+        parseStageFlag(item.teamSelectLinkToStage) ||
+        parseStageFlag(item.teamSelectLinkEachTeamToStage)
+      const teamSelectAddGeneralComments =
+        parseStageFlag(item.addGeneralComments) ||
+        parseStageFlag(item.teamSelectIncludeGeneralComments)
+      const teamSelectShowStageWithoutSelection =
+        parseStageFlag(item.showStageWithoutSelection) ||
+        parseStageFlag(item.teamSelectAlwaysShowStagedElements)
+      const teamSelectDefaultTab = normalizeTeamStageTab(item.teamSelectValue ?? item.value)
 
       if (isCover) {
         return {
@@ -1450,7 +1706,8 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "input",
-          tag: parseAssetTag(item),
+          tag: parsedAssetTag,
+          teamStageScope: parsedTeamStageScope,
           autoTeleopScope,
           stageParentId,
           stageParentTag,
@@ -1515,10 +1772,12 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
               ? item.toggleTextSize
               : undefined
 
+        const toggleStyle = normalizeToggleStyle(item.style ?? item.toggleStyle)
+
         return {
           id,
           type: "toggle-switch",
-          tag: parseAssetTag(item),
+          tag: parsedAssetTag,
           autoTeleopScope,
           stageParentId,
           stageParentTag,
@@ -1532,7 +1791,8 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
               : typeof item.text === "string" && item.text.trim().length > 0
                 ? item.text
                 : undefined,
-            value: toBoolean(item.value) ?? toBoolean(item.toggleOn) ?? false,
+          value: toBoolean(item.value) ?? toBoolean(item.toggleOn) ?? false,
+          toggleStyle,
           textAlign:
             toggleTextAlign === "left" || toggleTextAlign === "right" || toggleTextAlign === "center"
               ? toggleTextAlign
@@ -1724,7 +1984,7 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         return {
           id,
           type: "icon-button",
-          tag: parseAssetTag(item),
+          tag: parsedAssetTag,
           autoTeleopScope,
           increment: parsedIncrement ?? undefined,
           buttonPressMode: normalizePressMode(item.buttonPressMode ?? item.pressMode),
@@ -1763,7 +2023,12 @@ function parseScoutAssets(payload: unknown): ScoutAsset[] {
         type: "button",
         buttonKind: isTeamSelect ? "button" : isSwapButton ? "swap" : actionButtonKind ?? "button",
         // Team-select assets can come through with an empty tag, so set a stable internal tag.
-        tag: isTeamSelect ? "team-select" : parseAssetTag(item),
+        tag: isTeamSelect ? "team-select" : parsedAssetTag,
+        teamSelectRootTag,
+        teamSelectLinkEachTeamToStage: isTeamSelect ? teamSelectLinkEachTeamToStage : undefined,
+        teamSelectAddGeneralComments: isTeamSelect ? teamSelectAddGeneralComments : undefined,
+        teamSelectShowStageWithoutSelection: isTeamSelect ? teamSelectShowStageWithoutSelection : undefined,
+        teamSelectDefaultTab: isTeamSelect ? teamSelectDefaultTab : undefined,
         autoTeleopScope,
         increment: parsedIncrement ?? undefined,
         buttonPressMode: normalizePressMode(item.buttonPressMode ?? item.pressMode),
@@ -1847,12 +2112,16 @@ export default function ScoutPage() {
   const [fieldAspectRatio, setFieldAspectRatio] = useState<FieldAspectRatio | null>(null)
   const [eventKey, setEventKey] = useState<string>("")
   const [scouterName, setScouterName] = useState<string>("")
+  const [pitQuestions, setPitQuestions] = useState<PitQuestion[]>([])
+  const [pitAnswersByQuestionId, setPitAnswersByQuestionId] = useState<Record<string, PitAnswerValue>>({})
   const [controlMode, setControlMode] = useState<ControlMode>("auto")
   const [autoTimerStartedAtMs, setAutoTimerStartedAtMs] = useState<number | null>(null)
   const [autoTimerRemainingMs, setAutoTimerRemainingMs] = useState<number>(AUTO_TIMER_DURATION_MS)
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number>(Date.now())
   const [teamValue, setTeamValue] = useState<string>(TEAM_DEFAULT_VALUE)
+  const [teamStageTabByRootId, setTeamStageTabByRootId] = useState<Record<string, TeamStageTab>>({})
   const [eventScheduleMatches, setEventScheduleMatches] = useState<TbaSimpleMatch[]>([])
+  const [eventTeamsByKey, setEventTeamsByKey] = useState<Record<string, TbaEventTeamInfo>>({})
   const [previewStageParentId, setPreviewStageParentId] = useState<string | null>(null)
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeActionEvent[]>([])
   const [matchTimelineStartAtMs, setMatchTimelineStartAtMs] = useState<number | null>(null)
@@ -2024,6 +2293,18 @@ export default function ScoutPage() {
       }
     }
 
+    const storedEventTeams = localStorage.getItem("eventTeams")
+    if (!storedEventTeams) {
+      setEventTeamsByKey({})
+    } else {
+      try {
+        const parsedEventTeams = JSON.parse(storedEventTeams) as unknown
+        setEventTeamsByKey(normalizeEventTeamsByKey(parsedEventTeams))
+      } catch {
+        setEventTeamsByKey({})
+      }
+    }
+
     const storedPayload = localStorage.getItem("payload")
     const storedFieldMapping = localStorage.getItem("fieldMapping")
 
@@ -2043,6 +2324,8 @@ export default function ScoutPage() {
       setMirrorLine(null)
       setFieldAspectRatio(null)
       setIsEventTimeTrackingEnabled(false)
+      setPitQuestions([])
+      setPitAnswersByQuestionId({})
       return
     }
 
@@ -2051,6 +2334,7 @@ export default function ScoutPage() {
       const normalizedPayload = typeof parsedPayload === "string" ? tryParseJson(parsedPayload) : parsedPayload
       const parsedAssets = parseScoutAssets(normalizedPayload)
       setScoutAssets(parsedAssets)
+      setPitQuestions(normalizePitQuestions(normalizedPayload))
       setMirrorLine(parseMirrorLine(normalizedPayload))
       setFieldAspectRatio(parseFieldAspectRatio(normalizedPayload))
 
@@ -2097,8 +2381,51 @@ export default function ScoutPage() {
       setEventKey("")
       setIsEventTimeTrackingEnabled(false)
       setScoutFormTypeCode(0)
+      setPitQuestions([])
+      setPitAnswersByQuestionId({})
     }
   }, [])
+
+  useEffect(() => {
+    setPitAnswersByQuestionId((previous) =>
+      pitQuestions.reduce<Record<string, PitAnswerValue>>((accumulator, question) => {
+        const existingValue = previous[question.id]
+
+        if (question.type === "text") {
+          accumulator[question.id] = typeof existingValue === "string" ? existingValue : ""
+          return accumulator
+        }
+
+        if (question.type === "slider") {
+          const fallback = getDefaultPitAnswer(question) as number
+          const existingSliderValue =
+            typeof existingValue === "number" && Number.isFinite(existingValue) ? existingValue : fallback
+          accumulator[question.id] = Math.max(question.sliderMin, Math.min(question.sliderMax, existingSliderValue))
+          return accumulator
+        }
+
+        if (question.type === "all-that-apply") {
+          accumulator[question.id] = Array.isArray(existingValue)
+            ? existingValue.filter(
+                (entry): entry is number =>
+                  typeof entry === "number" && Number.isInteger(entry) && entry >= 0 && entry < question.options.length
+              )
+            : []
+          return accumulator
+        }
+
+        accumulator[question.id] =
+          typeof existingValue === "number" &&
+          Number.isInteger(existingValue) &&
+          existingValue >= 0 &&
+          existingValue < question.options.length
+            ? existingValue
+            : null
+
+        return accumulator
+      }, {})
+    )
+  }, [pitQuestions])
 
   useEffect(() => {
     const element = containerRef.current
@@ -2308,6 +2635,73 @@ export default function ScoutPage() {
     return stageRoot
   }, [displayedAssets, previewStageParentId])
 
+  const linkedTeamSelectStageByRootId = useMemo(() => {
+    const stageByRootId = new Map<
+      string,
+      {
+        selectedTab: TeamStageTab
+        addGeneralComments: boolean
+        showStageWithoutSelection: boolean
+      }
+    >()
+
+    displayedAssets.forEach((asset) => {
+      if (asset.type !== "button") return
+      if (asset.tag !== TEAM_SELECT_TAG) return
+      if (asset.teamSelectLinkEachTeamToStage !== true) return
+
+      const availableTabs = getTeamStageTabs(asset.teamSelectAddGeneralComments === true)
+      const preferredTab =
+        teamStageTabByRootId[asset.id] ??
+        normalizeTeamStageTab(asset.teamSelectDefaultTab) ??
+        availableTabs[0] ??
+        "b1"
+      const selectedTab = availableTabs.includes(preferredTab) ? preferredTab : availableTabs[0] ?? "b1"
+
+      stageByRootId.set(asset.id, {
+        selectedTab,
+        addGeneralComments: asset.teamSelectAddGeneralComments === true,
+        showStageWithoutSelection: asset.teamSelectShowStageWithoutSelection === true,
+      })
+    })
+
+    return stageByRootId
+  }, [displayedAssets, teamStageTabByRootId])
+
+  const doesLinkedTeamStageChildMatchSelectedTab = useCallback(
+    (asset: ScoutAsset) => {
+      if (!asset.stageParentId) return true
+
+      const linkedStage = linkedTeamSelectStageByRootId.get(asset.stageParentId)
+      if (!linkedStage) return true
+
+      if (!linkedStage.showStageWithoutSelection && !linkedStage.selectedTab) {
+        return false
+      }
+
+      const selectedTab = linkedStage.selectedTab
+      const taggedValue =
+        "tag" in asset && typeof asset.tag === "string" ? asset.tag.trim() : ""
+      const explicitTabSuffix = taggedValue ? getTeamStageTagSuffix(taggedValue) : undefined
+
+      if (explicitTabSuffix) {
+        return explicitTabSuffix === selectedTab
+      }
+
+      const resolvedScope: TeamStageScope =
+        asset.type === "input" && asset.teamStageScope === "general"
+          ? "general"
+          : "teams"
+
+      if (selectedTab === "general") {
+        return resolvedScope === "general"
+      }
+
+      return resolvedScope !== "general"
+    },
+    [linkedTeamSelectStageByRootId]
+  )
+
   const visibleAssets = useMemo(() => {
     const applyScopeFilter = (assets: ScoutAsset[]) =>
       assets.filter((asset) => {
@@ -2315,13 +2709,19 @@ export default function ScoutPage() {
         return asset.autoTeleopScope === controlMode
       })
 
+    const topLevelAndLinkedTeamStageAssets = displayedAssets.filter((asset) => {
+      if (!asset.stageParentId) return true
+      if (!linkedTeamSelectStageByRootId.has(asset.stageParentId)) return false
+      return doesLinkedTeamStageChildMatchSelectedTab(asset)
+    })
+
     if (!previewStageParentId) {
-      return applyScopeFilter(displayedAssets.filter((asset) => !asset.stageParentId))
+      return applyScopeFilter(topLevelAndLinkedTeamStageAssets)
     }
 
     const stageRoot = displayedAssets.find((asset) => asset.id === previewStageParentId)
     if (!stageRoot || !isStageableAsset(stageRoot)) {
-      return applyScopeFilter(displayedAssets.filter((asset) => !asset.stageParentId))
+      return applyScopeFilter(topLevelAndLinkedTeamStageAssets)
     }
 
     const hideRoot = Boolean(stageRoot.stageHideAfterSelection)
@@ -2329,16 +2729,28 @@ export default function ScoutPage() {
 
     if (hideOthers) {
       return applyScopeFilter(displayedAssets.filter(
-        (asset) => asset.stageParentId === previewStageParentId || (!hideRoot && asset.id === previewStageParentId)
+        (asset) =>
+          (asset.stageParentId === previewStageParentId && doesLinkedTeamStageChildMatchSelectedTab(asset)) ||
+          (!hideRoot && asset.id === previewStageParentId)
       ))
     }
 
     return applyScopeFilter(displayedAssets.filter((asset) => {
-      if (asset.stageParentId === previewStageParentId) return true
+      if (asset.stageParentId === previewStageParentId) {
+        return doesLinkedTeamStageChildMatchSelectedTab(asset)
+      }
       if (asset.id === previewStageParentId) return !hideRoot
-      return !asset.stageParentId
+      if (!asset.stageParentId) return true
+      if (!linkedTeamSelectStageByRootId.has(asset.stageParentId)) return false
+      return doesLinkedTeamStageChildMatchSelectedTab(asset)
     }))
-  }, [controlMode, displayedAssets, previewStageParentId])
+  }, [
+    controlMode,
+    displayedAssets,
+    doesLinkedTeamStageChildMatchSelectedTab,
+    linkedTeamSelectStageByRootId,
+    previewStageParentId,
+  ])
 
   const isSwapMirrored = useMemo(() => isSwapped, [isSwapped])
 
@@ -2388,37 +2800,67 @@ export default function ScoutPage() {
     return sameNumberMatches.find((match) => match.compLevel === "qm") ?? sameNumberMatches[0]
   }, [eventScheduleMatches, selectedMatchNumber])
 
-  const teamSelectOptions = useMemo<TeamSelectOption[]>(() => {
-    if (!selectedScheduleMatch) return []
+  const selectedScheduleTeamInfoByTab = useMemo<Partial<Record<TeamStageBaseTab, TbaEventTeamInfo>>>(() => {
+    if (!selectedScheduleMatch) return {}
 
-    const blueOptions = selectedScheduleMatch.blueTeamKeys.map((teamKey, index) => {
-      const teamNumber = teamKeyToTeamNumber(teamKey)
+    const resolveTeamInfo = (teamKey: string | undefined) => {
+      if (!teamKey) return null
+
+      const normalizedTeamKey = normalizeTeamKey(teamKey)
+      if (!normalizedTeamKey) return null
+
+      const teamFromLookup = eventTeamsByKey[normalizedTeamKey]
+      const teamNumber = teamFromLookup?.teamNumber ?? teamKeyToTeamNumber(normalizedTeamKey)
+      const displayName = teamFromLookup?.displayName ?? teamNumber
+
       return {
-        value: teamNumber,
-        label: `B${index + 1}: ${teamNumber}`,
-        colorClassName: "text-sky-300",
-      } satisfies TeamSelectOption
-    })
+        teamNumber,
+        displayName,
+      } satisfies TbaEventTeamInfo
+    }
 
-    const redOptions = selectedScheduleMatch.redTeamKeys.map((teamKey, index) => {
-      const teamNumber = teamKeyToTeamNumber(teamKey)
-      return {
-        value: teamNumber,
-        label: `R${index + 1}: ${teamNumber}`,
-        colorClassName: "text-red-300",
-      } satisfies TeamSelectOption
-    })
-
-    return [...blueOptions, ...redOptions]
-  }, [selectedScheduleMatch])
+    return {
+      b1: resolveTeamInfo(selectedScheduleMatch.blueTeamKeys[0]) ?? undefined,
+      b2: resolveTeamInfo(selectedScheduleMatch.blueTeamKeys[1]) ?? undefined,
+      b3: resolveTeamInfo(selectedScheduleMatch.blueTeamKeys[2]) ?? undefined,
+      r1: resolveTeamInfo(selectedScheduleMatch.redTeamKeys[0]) ?? undefined,
+      r2: resolveTeamInfo(selectedScheduleMatch.redTeamKeys[1]) ?? undefined,
+      r3: resolveTeamInfo(selectedScheduleMatch.redTeamKeys[2]) ?? undefined,
+    }
+  }, [eventTeamsByKey, selectedScheduleMatch])
 
   useEffect(() => {
-    if (!teamValue) return
+    const linkedTeamSelectRoots = scoutAssets.filter(
+      (asset): asset is ButtonAsset =>
+        asset.type === "button" &&
+        asset.tag === TEAM_SELECT_TAG &&
+        asset.teamSelectLinkEachTeamToStage === true
+    )
 
-    if (!teamSelectOptions.some((option) => option.value === teamValue)) {
-      setTeamValue(TEAM_DEFAULT_VALUE)
+    const initializedTabs = linkedTeamSelectRoots.reduce<Record<string, TeamStageTab>>(
+      (accumulator, asset) => {
+        const availableTabs = getTeamStageTabs(asset.teamSelectAddGeneralComments === true)
+        const preferredTab =
+          normalizeTeamStageTab(asset.teamSelectDefaultTab) ??
+          availableTabs[0] ??
+          "b1"
+
+        accumulator[asset.id] = availableTabs.includes(preferredTab)
+          ? preferredTab
+          : availableTabs[0] ?? "b1"
+
+        return accumulator
+      },
+      {}
+    )
+
+    setTeamStageTabByRootId(initializedTabs)
+
+    const firstRootId = Object.keys(initializedTabs)[0]
+    if (firstRootId) {
+      setTeamValue(initializedTabs[firstRootId])
     }
-  }, [TEAM_DEFAULT_VALUE, teamSelectOptions, teamValue])
+  }, [TEAM_SELECT_TAG, scoutAssets])
 
   useEffect(() => {
     if (!primaryAutoToggleAsset) {
@@ -3231,6 +3673,13 @@ export default function ScoutPage() {
     setTagStackActions([])
     setRedoTagStackActions([])
     setInputValuesByKey({})
+    setPitAnswersByQuestionId(
+      pitQuestions.reduce<Record<string, PitAnswerValue>>((accumulator, question) => {
+        accumulator[question.id] = getDefaultPitAnswer(question)
+        return accumulator
+      }, {})
+    )
+    setTeamStageTabByRootId({})
     setTeamValue(TEAM_DEFAULT_VALUE)
     setEditingMatchKey(null)
     setEditingMatchDraft("")
@@ -3272,51 +3721,98 @@ export default function ScoutPage() {
     )
 
     recordRuntimeEvent({ type: "reset" })
-  }, [TEAM_DEFAULT_VALUE, recordRuntimeEvent, scoutAssets, stopAllActiveHolds])
+  }, [TEAM_DEFAULT_VALUE, pitQuestions, recordRuntimeEvent, scoutAssets, stopAllActiveHolds])
 
   const handleSubmit = useCallback(async () => {
     stopAllActiveHolds()
 
     const output: Record<string, number | string | boolean> = {}
 
-    const uniqueButtonAndIconTags = [
-      ...new Set(
-        scoutAssets
-          .filter(
-            (asset): asset is ButtonAsset | IconButtonAsset | ButtonSliderAsset =>
-              asset.type === "button" || asset.type === "icon-button" || asset.type === "button-slider"
-          )
-          .map((asset) => asset.tag)
-          .filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
-          .filter((tag) => tag !== TEAM_SELECT_TAG)
-      ),
-    ]
+    const buttonAndIconTagScopeEntries = scoutAssets
+      .filter(
+        (asset): asset is ButtonAsset | IconButtonAsset | ButtonSliderAsset =>
+          asset.type === "button" || asset.type === "icon-button" || asset.type === "button-slider"
+      )
+      .flatMap((asset) => {
+        const normalizedTag = typeof asset.tag === "string" ? asset.tag.trim() : ""
+        if (!normalizedTag || normalizedTag === TEAM_SELECT_TAG) return []
+        return [{ tag: normalizedTag, autoTeleopScope: asset.autoTeleopScope }]
+      })
 
-    const uniqueSuccessTags = [
-      ...new Set(
-        scoutAssets
-          .filter(
-            (asset): asset is ButtonAsset | IconButtonAsset =>
-              (asset.type === "button" || asset.type === "icon-button") &&
-              asset.successTrackingEnabled === true &&
-              typeof asset.tag === "string" &&
-              asset.tag.trim().length > 0
-          )
-          .flatMap((asset) => {
-            const normalizedTag = asset.tag?.trim() ?? ""
-            if (!normalizedTag) return []
-            return [`${normalizedTag}.success`, `${normalizedTag}.fail`]
-          })
-      ),
-    ]
+    const successTagScopeEntries = scoutAssets
+      .filter(
+        (asset): asset is ButtonAsset | IconButtonAsset =>
+          (asset.type === "button" || asset.type === "icon-button") &&
+          asset.successTrackingEnabled === true &&
+          typeof asset.tag === "string" &&
+          asset.tag.trim().length > 0
+      )
+      .flatMap((asset) => {
+        const normalizedTag = asset.tag?.trim() ?? ""
+        if (!normalizedTag) return []
 
-    const uniqueInputTags = [
-      ...new Set(
-        scoutAssets
-          .filter((asset): asset is InputAsset => asset.type === "input")
-          .map((asset) => (asset.tag && asset.tag.trim().length > 0 ? asset.tag : asset.id))
-      ),
-    ]
+        return [
+          { tag: `${normalizedTag}.success`, autoTeleopScope: asset.autoTeleopScope },
+          { tag: `${normalizedTag}.fail`, autoTeleopScope: asset.autoTeleopScope },
+        ]
+      })
+
+    const linkedTeamSelectRootsById = scoutAssets.reduce<
+      Record<string, { addGeneralComments: boolean; selectedTab: TeamStageTab }>
+    >((accumulator, asset) => {
+      if (asset.type !== "button") return accumulator
+      if (asset.tag !== TEAM_SELECT_TAG) return accumulator
+      if (asset.teamSelectLinkEachTeamToStage !== true) return accumulator
+
+      const availableTabs = getTeamStageTabs(asset.teamSelectAddGeneralComments === true)
+      const preferredTab =
+        teamStageTabByRootId[asset.id] ??
+        normalizeTeamStageTab(asset.teamSelectDefaultTab) ??
+        availableTabs[0] ??
+        "b1"
+
+      accumulator[asset.id] = {
+        addGeneralComments: asset.teamSelectAddGeneralComments === true,
+        selectedTab: availableTabs.includes(preferredTab) ? preferredTab : availableTabs[0] ?? "b1",
+      }
+
+      return accumulator
+    }, {})
+
+    const inputOutputByTag = scoutAssets
+      .filter((asset): asset is InputAsset => asset.type === "input")
+      .reduce<Record<string, string>>((accumulator, asset) => {
+        const rawTag = typeof asset.tag === "string" && asset.tag.trim().length > 0 ? asset.tag.trim() : asset.id
+        if (!rawTag) return accumulator
+
+        const stageParentId = asset.stageParentId
+        const linkedTeamRoot = stageParentId ? linkedTeamSelectRootsById[stageParentId] : undefined
+
+        if (!linkedTeamRoot || !stageParentId) {
+          accumulator[rawTag] = inputValuesByKey[rawTag] ?? ""
+          return accumulator
+        }
+
+        const baseTag = stripTeamStageSuffix(rawTag)
+        const explicitTab = getTeamStageTagSuffix(rawTag)
+        const scope = asset.teamStageScope ?? (explicitTab === "general" ? "general" : "teams")
+
+        const tabsToPopulate = explicitTab
+          ? [explicitTab]
+          : getTeamStageTabs(linkedTeamRoot.addGeneralComments).filter((tab) =>
+              tab === "general" ? scope === "general" : scope !== "general"
+            )
+
+        tabsToPopulate.forEach((tab) => {
+          const outputTag = `${baseTag}-${tab}`
+          const scopedKey = getTeamStageScopedKey(baseTag, stageParentId, tab)
+          const fallbackValue = tab === linkedTeamRoot.selectedTab ? inputValuesByKey[rawTag] : undefined
+
+          accumulator[outputTag] = inputValuesByKey[scopedKey] ?? fallbackValue ?? accumulator[outputTag] ?? ""
+        })
+
+        return accumulator
+      }, {})
 
     const uniqueToggleTags = [
       ...new Set(
@@ -3338,8 +3834,14 @@ export default function ScoutPage() {
 
     const uniqueModePrefixedTags = [
       ...new Set(
-        [...uniqueButtonAndIconTags, ...uniqueSuccessTags].flatMap((tag) => {
-          const normalizedTag = stripModePrefix(tag)
+        [...buttonAndIconTagScopeEntries, ...successTagScopeEntries].flatMap((entry) => {
+          const normalizedTag = stripModePrefix(entry.tag)
+          if (!normalizedTag) return []
+
+          if (entry.autoTeleopScope === "auto" || entry.autoTeleopScope === "teleop") {
+            return [`${entry.autoTeleopScope}.${normalizedTag}`]
+          }
+
           return [`auto.${normalizedTag}`, `teleop.${normalizedTag}`]
         })
       ),
@@ -3349,8 +3851,8 @@ export default function ScoutPage() {
       output[tag] = 0
     })
 
-    uniqueInputTags.forEach((tag) => {
-      output[tag] = ""
+    Object.entries(inputOutputByTag).forEach(([tag, value]) => {
+      output[tag] = value
     })
 
     uniqueToggleTags.forEach((tag) => {
@@ -3369,17 +3871,47 @@ export default function ScoutPage() {
       output[tag] = tagStack.filter((stackTag) => stackTag === tag).length
     })
 
-    uniqueInputTags.forEach((tag) => {
-      output[tag] = inputValuesByKey[tag] ?? ""
-    })
-
     uniqueToggleTags.forEach((tag) => {
       output[tag] = toggleValuesByKey[tag] ?? false
     })
 
+    const encodedPitAnswers =
+      scoutFormTypeCode === 2 && pitQuestions.length > 0
+        ? pitQuestions
+            .map((question, index) => `${index + 1}=${encodePitQuestionAnswer(question, pitAnswersByQuestionId[question.id])}`)
+            .join(";")
+        : ""
+
+    if (encodedPitAnswers.length > 0) {
+      output.pqv = 1
+      output.pq = encodedPitAnswers
+    }
+
+    const selectedTeamTab = normalizeTeamStageTab(teamValue)
+    const mappedTeamValueFromSchedule =
+      selectedScheduleMatch && selectedTeamTab && selectedTeamTab !== "general"
+        ? selectedTeamTab === "b1"
+          ? selectedScheduleMatch.blueTeamKeys[0]
+          : selectedTeamTab === "b2"
+            ? selectedScheduleMatch.blueTeamKeys[1]
+            : selectedTeamTab === "b3"
+              ? selectedScheduleMatch.blueTeamKeys[2]
+              : selectedTeamTab === "r1"
+                ? selectedScheduleMatch.redTeamKeys[0]
+                : selectedTeamTab === "r2"
+                  ? selectedScheduleMatch.redTeamKeys[1]
+                  : selectedScheduleMatch.redTeamKeys[2]
+        : null
+    const outputTeamValue = mappedTeamValueFromSchedule
+      ? teamKeyToTeamNumber(mappedTeamValueFromSchedule)
+      : teamValue
+
+    const scoutTypeLabel = scoutFormTypeCode === 1 ? "qualitative" : scoutFormTypeCode === 2 ? "pit" : "match"
+
     output.match = selectedMatchNumber ?? 0
-    output.team = teamValue
+    output.team = outputTeamValue
     output.scouter = scouterName
+    output.scoutType = scoutTypeLabel
 
     const startPositionAssets = scoutAssets.filter(
       (asset): asset is StartPositionAsset => asset.type === "start-position"
@@ -3431,7 +3963,17 @@ export default function ScoutPage() {
 
     let finalPayloadObject: unknown
 
-    if (isEventTimeTrackingEnabled && fieldMapping) {
+    if (scoutFormTypeCode === 2) {
+      finalPayloadObject = {
+        scouter: scouterName,
+        team: outputTeamValue,
+        match: selectedMatchNumber ?? 0,
+        scoutType: scoutTypeLabel,
+        ft: scoutTypePayload,
+        pqv: 1,
+        pq: encodedPitAnswers,
+      }
+    } else if (isEventTimeTrackingEnabled && fieldMapping) {
       const timelineEntries: string[] = []
       const successIds = new Set((fieldMapping.success ?? []).map((id) => String(id)))
       const timelineStartAtMs = matchTimelineStartAtMs
@@ -3513,21 +4055,22 @@ export default function ScoutPage() {
         return 0
       })
 
-      const parsedTeamNumber = toNonNegativeWholeNumber(teamValue)
+      const parsedTeamNumber = toNonNegativeWholeNumber(outputTeamValue)
 
       finalPayloadObject = {
         t: timelineEntries.join(","),
         s: textValues.join("|"),
         b: metaValues,
-        d: [selectedMatchNumber ?? 0, parsedTeamNumber ?? teamValue, scouterName],
+        d: [selectedMatchNumber ?? 0, parsedTeamNumber ?? outputTeamValue, scouterName],
         p: robotPositionPayload,
         ft: scoutTypePayload,
+        scoutType: scoutTypeLabel,
       }
     } else {
       const payloadObject = {
         ...output,
         match: selectedMatchNumber ?? 0,
-        team: teamValue,
+        team: outputTeamValue,
         scouter: scouterName,
       }
 
@@ -3539,18 +4082,24 @@ export default function ScoutPage() {
       }
     }
 
-    const scoutTypeLabel = scoutFormTypeCode === 1 ? "qualitative" : scoutFormTypeCode === 2 ? "pit" : "match"
-    const previewPayloadObject = {
-      ...output,
-      robotPosition:
-        robotPositionPayload.length === 2
-          ? { x: robotPositionPayload[0], y: robotPositionPayload[1] }
-          : null,
-      scoutType: {
-        code: scoutFormTypeCode,
-        label: scoutTypeLabel,
-      },
-    }
+    const previewPayloadObject =
+      scoutFormTypeCode === 2
+        ? {
+            ...(finalPayloadObject as Record<string, unknown>),
+            pitAnswersEncoded: encodedPitAnswers,
+          }
+        : {
+            ...output,
+            pitAnswersEncoded: encodedPitAnswers || null,
+            robotPosition:
+              robotPositionPayload.length === 2
+                ? { x: robotPositionPayload[0], y: robotPositionPayload[1] }
+                : null,
+            scoutType: {
+              code: scoutFormTypeCode,
+              label: scoutTypeLabel,
+            },
+          }
 
     const payloadJson = JSON.stringify(finalPayloadObject)
     const previewPayloadJson = JSON.stringify(previewPayloadObject, null, 2)
@@ -3559,7 +4108,7 @@ export default function ScoutPage() {
 
     try {
       const qrDataUrl = await QRCode.toDataURL(payloadJson, {
-        width: 320,
+        width: 1600,
         margin: 1,
       })
       setSubmitQrCodeUrl(qrDataUrl)
@@ -3582,11 +4131,15 @@ export default function ScoutPage() {
     scoutFormTypeCode,
     scouterName,
     selectedMatchNumber,
+    selectedScheduleMatch,
     startPositionsByAssetId,
     tagStack,
     teamValue,
+    teamStageTabByRootId,
     lockedStartPositionByAssetId,
     previewSliderValues,
+    pitAnswersByQuestionId,
+    pitQuestions,
     toggleValuesByKey,
     stopAllActiveHolds,
   ])
@@ -3705,6 +4258,171 @@ export default function ScoutPage() {
           })
         }}
       >
+        {scoutFormTypeCode === 2 ? (
+          <div className="absolute inset-0 overflow-y-auto p-4 sm:p-6">
+            <div className="mx-auto w-full max-w-4xl space-y-4">
+              <div className="rounded-xl border border-white/20 bg-slate-900/90 p-4 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <h2 className="text-lg font-semibold text-white">Pit Scouting Form</h2>
+                    <p className="text-sm text-white/70">Complete each question, then submit the QR payload.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-white/80">
+                    <span className="rounded-md border border-white/20 bg-slate-950/70 px-2 py-1">
+                      Scouter: {scouterName || "Unknown"}
+                    </span>
+                    <span className="rounded-md border border-white/20 bg-slate-950/70 px-2 py-1">Type: pit</span>
+                    {selectedMatchNumber !== null ? (
+                      <span className="rounded-md border border-white/20 bg-slate-950/70 px-2 py-1">
+                        Match: {selectedMatchNumber}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto_auto]">
+                  <Input
+                    value={teamValue}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) => setTeamValue(event.target.value)}
+                    placeholder="Team number"
+                    aria-label="Team number"
+                    className="border-white/20 bg-slate-950/90 text-white placeholder:text-white/45"
+                  />
+                  <Button type="button" onClick={handleSubmit} className="sm:w-28">
+                    Submit
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setIsResetDialogOpen(true)} className="sm:w-28">
+                    Reset
+                  </Button>
+                </div>
+              </div>
+
+              {pitQuestions.length === 0 ? (
+                <div className="rounded-xl border border-white/15 bg-slate-900/70 p-6 text-sm text-white/75">
+                  No pit questions were found in payload.editorState.postMatchQuestions.
+                </div>
+              ) : (
+                pitQuestions.map((question, questionIndex) => {
+                  const rawAnswer = pitAnswersByQuestionId[question.id] ?? getDefaultPitAnswer(question)
+
+                  return (
+                    <div
+                      key={question.id}
+                      className="rounded-xl border border-white/15 bg-slate-900/80 p-4 shadow-sm"
+                    >
+                      <p className="text-xs font-semibold uppercase tracking-wide text-white/55">
+                        Question {questionIndex + 1}
+                      </p>
+                      <p className="mt-1 text-base font-medium text-white">{question.text}</p>
+
+                      {question.type === "text" ? (
+                        <textarea
+                          value={typeof rawAnswer === "string" ? rawAnswer : ""}
+                          onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => {
+                            setPitAnswersByQuestionId((previous) => ({
+                              ...previous,
+                              [question.id]: event.target.value,
+                            }))
+                          }}
+                          rows={4}
+                          placeholder="Type your answer"
+                          className="mt-3 w-full resize-y rounded-md border border-white/20 bg-slate-950/90 px-3 py-2 text-sm text-white placeholder:text-white/45"
+                        />
+                      ) : null}
+
+                      {question.type === "slider" ? (
+                        <div className="mt-3 space-y-2">
+                          <div className="text-sm font-semibold text-white">
+                            {typeof rawAnswer === "number" ? Math.round(rawAnswer) : Math.round(question.sliderMin)}
+                          </div>
+                          <input
+                            type="range"
+                            min={Math.round(question.sliderMin)}
+                            max={Math.round(question.sliderMax)}
+                            step={1}
+                            value={typeof rawAnswer === "number" ? Math.round(rawAnswer) : Math.round(question.sliderMin)}
+                            onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                              const nextValue = Number(event.target.value)
+                              setPitAnswersByQuestionId((previous) => ({
+                                ...previous,
+                                [question.id]: Number.isFinite(nextValue) ? nextValue : question.sliderMin,
+                              }))
+                            }}
+                            className="h-6 w-full accent-sky-300"
+                          />
+                          <div className="flex items-center justify-between text-xs text-white/60">
+                            <span>{question.sliderLeftText}</span>
+                            <span>{question.sliderRightText}</span>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {question.type === "all-that-apply" ? (
+                        <div className="mt-3 space-y-2">
+                          {question.options.map((option, optionIndex) => {
+                            const selectedIndexes = Array.isArray(rawAnswer)
+                              ? rawAnswer.filter((entry): entry is number => typeof entry === "number")
+                              : []
+                            const isChecked = selectedIndexes.includes(optionIndex)
+
+                            return (
+                              <label key={`${question.id}-multi-${optionIndex}`} className="flex items-center gap-2 text-sm text-white/85">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                                    setPitAnswersByQuestionId((previous) => {
+                                      const current = Array.isArray(previous[question.id])
+                                        ? (previous[question.id] as number[]).filter((entry) => Number.isInteger(entry))
+                                        : []
+
+                                      const next = event.target.checked
+                                        ? [...current, optionIndex]
+                                        : current.filter((entry) => entry !== optionIndex)
+
+                                      return {
+                                        ...previous,
+                                        [question.id]: [...new Set(next)].sort((left, right) => left - right),
+                                      }
+                                    })
+                                  }}
+                                  className="h-4 w-4 rounded border-white/30 bg-slate-950 accent-sky-400"
+                                />
+                                <span>{option}</span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      ) : null}
+
+                      {question.type === "single-select" ? (
+                        <RadioGroup
+                          value={typeof rawAnswer === "number" && rawAnswer >= 0 ? String(rawAnswer) : ""}
+                          onValueChange={(nextValue) => {
+                            const parsed = Number(nextValue)
+                            setPitAnswersByQuestionId((previous) => ({
+                              ...previous,
+                              [question.id]: Number.isInteger(parsed) ? parsed : null,
+                            }))
+                          }}
+                          className="mt-3 space-y-2"
+                        >
+                          {question.options.map((option, optionIndex) => (
+                            <label key={`${question.id}-single-${optionIndex}`} className="flex items-center gap-2 text-sm text-white/85">
+                              <RadioGroupItem value={String(optionIndex)} id={`${question.id}-single-${optionIndex}`} />
+                              <span>{option}</span>
+                            </label>
+                          ))}
+                        </RadioGroup>
+                      ) : null}
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
         {backgroundImage ? (
           <img
             src={backgroundImage}
@@ -4009,11 +4727,21 @@ export default function ScoutPage() {
           }
 
           if (asset.type === "input") {
-            const inputStateKey =
+            const baseInputKey =
               typeof asset.tag === "string" && asset.tag.trim().length > 0
                 ? asset.tag
                 : asset.id
-            const inputValue = inputValuesByKey[inputStateKey] ?? ""
+            const linkedTeamStage =
+              asset.stageParentId ? linkedTeamSelectStageByRootId.get(asset.stageParentId) : undefined
+            const scopedInputStateKey =
+              linkedTeamStage && asset.stageParentId
+                ? getTeamStageScopedKey(
+                    stripTeamStageSuffix(baseInputKey),
+                    asset.stageParentId,
+                    linkedTeamStage.selectedTab
+                  )
+                : baseInputKey
+            const inputValue = inputValuesByKey[scopedInputStateKey] ?? inputValuesByKey[baseInputKey] ?? ""
 
             return (
               <Field
@@ -4029,13 +4757,13 @@ export default function ScoutPage() {
                       const nextValue = event.target.value
                       setInputValuesByKey((previous) => ({
                         ...previous,
-                        [inputStateKey]: nextValue,
+                        [scopedInputStateKey]: nextValue,
                       }))
 
                       recordRuntimeEvent({
                         type: "input-change",
                         assetId: asset.id,
-                        key: inputStateKey,
+                        key: scopedInputStateKey,
                         value: nextValue,
                       })
                     }}
@@ -4050,13 +4778,13 @@ export default function ScoutPage() {
                       const nextValue = event.target.value
                       setInputValuesByKey((previous) => ({
                         ...previous,
-                        [inputStateKey]: nextValue,
+                        [scopedInputStateKey]: nextValue,
                       }))
 
                       recordRuntimeEvent({
                         type: "input-change",
                         assetId: asset.id,
-                        key: inputStateKey,
+                        key: scopedInputStateKey,
                         value: nextValue,
                       })
                     }}
@@ -4111,6 +4839,7 @@ export default function ScoutPage() {
                 ? asset.tag
                 : asset.id
             const isChecked = toggleValuesByKey[toggleKey] ?? asset.value
+            const toggleStyle = normalizeToggleStyle(asset.toggleStyle)
             const toggleId = `toggle-${asset.id ?? index}`
             const textAlign = asset.textAlign ?? "center"
             const textClass =
@@ -4133,8 +4862,87 @@ export default function ScoutPage() {
             )
             const switchPixelWidth = 32 * switchScale
             const switchPixelHeight = 18 * switchScale
+            const boxPixelSize = Math.max(12, Math.round(18 * switchScale))
+            const boxIconSize = Math.max(9, Math.round(12 * switchScale))
             const resolvedTextSize = Math.max(6, textSize * switchScale)
             const toggleGap = Math.max(2, Math.round(8 * switchScale))
+
+            const handleToggleValueChange = (checked: boolean) => {
+              if (!isPreviewMode) return
+
+              const atMs = getNowMs()
+
+              setToggleValuesByKey((previous) => ({
+                ...previous,
+                [toggleKey]: checked,
+              }))
+
+              setToggleTransitionCountByKey((previous) => ({
+                ...previous,
+                [toggleKey]: (previous[toggleKey] ?? 0) + 1,
+              }))
+
+              setToggleLastChangedAtByKey((previous) => ({
+                ...previous,
+                [toggleKey]: atMs,
+              }))
+
+              recordRuntimeEvent({
+                type: "toggle-change",
+                assetId: asset.id,
+                key: toggleKey,
+                atMs,
+                value: checked,
+              })
+            }
+
+            const switchControl = (
+              <div
+                className="flex flex-none items-center justify-center"
+                style={{
+                  width: switchPixelWidth,
+                  height: switchPixelHeight,
+                  transform: isSwapMirrored
+                    ? `scaleX(-1) scale(${switchScale})`
+                    : `scale(${switchScale})`,
+                  transformOrigin: "center center",
+                }}
+              >
+                <Switch
+                  id={toggleId}
+                  checked={isChecked}
+                  disabled={!isPreviewMode}
+                  onCheckedChange={handleToggleValueChange}
+                />
+              </div>
+            )
+
+            const boxControl = (
+              <button
+                type="button"
+                className={`flex flex-none items-center justify-center rounded-md border transition-colors ${
+                  isChecked
+                    ? "border-emerald-300/60 bg-emerald-500/20 text-emerald-200"
+                    : "border-white/20 bg-slate-800/80 text-white/70"
+                }`}
+                style={{
+                  width: boxPixelSize,
+                  height: boxPixelSize,
+                }}
+                onClick={() => {
+                  if (!isPreviewMode) return
+                  handleToggleValueChange(!isChecked)
+                }}
+                disabled={!isPreviewMode}
+                aria-label={isChecked ? "Toggle true" : "Toggle false"}
+              >
+                {isChecked ? (
+                  <LucideIcons.Check style={{ width: boxIconSize, height: boxIconSize }} />
+                ) : (
+                  <LucideIcons.X style={{ width: boxIconSize, height: boxIconSize }} />
+                )}
+              </button>
+            )
 
             return (
               <div
@@ -4150,55 +4958,11 @@ export default function ScoutPage() {
                     transformOrigin: "center center",
                   }}
                 >
-                  <div
-                    className="flex flex-none items-center justify-center"
-                    style={{
-                      width: switchPixelWidth,
-                      height: switchPixelHeight,
-                      transform: isSwapMirrored
-                        ? `scaleX(-1) scale(${switchScale})`
-                        : `scale(${switchScale})`,
-                      transformOrigin: "center center",
-                    }}
-                  >
-                    <Switch
-                      id={toggleId}
-                      checked={isChecked}
-                      disabled={!isPreviewMode}
-                      onCheckedChange={(checked: boolean) => {
-                        if (!isPreviewMode) return
-
-                        const atMs = getNowMs()
-
-                        setToggleValuesByKey((previous) => ({
-                          ...previous,
-                          [toggleKey]: checked,
-                        }))
-
-                        setToggleTransitionCountByKey((previous) => ({
-                          ...previous,
-                          [toggleKey]: (previous[toggleKey] ?? 0) + 1,
-                        }))
-
-                        setToggleLastChangedAtByKey((previous) => ({
-                          ...previous,
-                          [toggleKey]: atMs,
-                        }))
-
-                        recordRuntimeEvent({
-                          type: "toggle-change",
-                          assetId: asset.id,
-                          key: toggleKey,
-                          atMs,
-                          value: checked,
-                        })
-                      }}
-                    />
-                  </div>
+                  {toggleStyle === "box" ? boxControl : switchControl}
                   {asset.label ? (
                     <Label
                       htmlFor={toggleId}
-                      className={`shrink-0 whitespace-nowrap leading-none text-white/80 ${textClass}`}
+                      className={`min-w-0 truncate whitespace-nowrap leading-none text-white/80 ${textClass}`}
                       style={{
                         fontSize: resolvedTextSize,
                         transform: isSwapMirrored ? "scaleX(-1)" : undefined,
@@ -4469,6 +5233,46 @@ export default function ScoutPage() {
           }
 
           if (asset.tag === TEAM_SELECT_TAG) {
+            const teamTabs = getTeamStageTabs(asset.teamSelectAddGeneralComments === true)
+            const preferredTab =
+              teamStageTabByRootId[asset.id] ??
+              normalizeTeamStageTab(asset.teamSelectDefaultTab) ??
+              teamTabs[0] ??
+              "b1"
+            const selectedTeamTab = teamTabs.includes(preferredTab) ? preferredTab : teamTabs[0] ?? "b1"
+
+            const teamSelectOptions = teamTabs.map((tab) => {
+              const colorClassName = tab.startsWith("b")
+                ? "text-sky-300"
+                : tab.startsWith("r")
+                  ? "text-rose-300"
+                  : "text-slate-300"
+
+              const teamInfo = tab === "general" ? undefined : selectedScheduleTeamInfoByTab[tab]
+              const slotLabel = tab.toUpperCase()
+              const teamLabel =
+                teamInfo && teamInfo.displayName !== teamInfo.teamNumber
+                  ? `${slotLabel}: ${teamInfo.teamNumber} ${teamInfo.displayName}`
+                  : teamInfo
+                    ? `${slotLabel}: ${teamInfo.teamNumber}`
+                    : slotLabel
+
+              return {
+                value: tab,
+                label: tab === "general" ? "general" : teamLabel,
+                colorClassName,
+              } satisfies TeamSelectOption
+            })
+
+            const selectedTeamOption =
+              teamSelectOptions.find((option) => option.value === selectedTeamTab) ?? null
+
+            const triggerToneClass = selectedTeamTab.startsWith("b")
+              ? "!border-sky-300/60 !bg-sky-500/15 !text-sky-100 hover:!bg-sky-500/20"
+              : selectedTeamTab.startsWith("r")
+                ? "!border-rose-300/60 !bg-rose-500/15 !text-rose-100 hover:!bg-rose-500/20"
+                : "!border-slate-300/60 !bg-slate-400/20 !text-slate-100 hover:!bg-slate-400/30"
+
             return (
               <div
                 key={asset.id ?? `team-select-${index}`}
@@ -4481,25 +5285,31 @@ export default function ScoutPage() {
                       type="button"
                       variant={asset.buttonKind === "submit" ? "default" : "outline"}
                       className={cn(
-                        "h-full w-full",
-                        asset.buttonKind === "submit"
-                          ? "!bg-white !text-black hover:!bg-white active:!bg-white"
-                          : "!bg-slate-900 !text-white hover:!bg-slate-900 active:!bg-slate-900"
+                        "h-full w-full truncate px-2 text-left font-semibold",
+                        triggerToneClass
                       )}
                     >
-                      {teamValue.trim().length > 0 ? teamValue : "Select Team"}
+                      {selectedTeamOption?.label ?? selectedTeamTab}
                     </Button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-56">
+                  <DropdownMenuContent align="start" className="w-72">
                     <RadioGroup
-                      value={teamValue}
+                      value={selectedTeamTab}
                       onValueChange={(nextTeamValue) => {
-                        setTeamValue(nextTeamValue)
+                        const normalizedTeamTab = normalizeTeamStageTab(nextTeamValue)
+                        if (!normalizedTeamTab) return
+
+                        setTeamStageTabByRootId((previous) => ({
+                          ...previous,
+                          [asset.id]: normalizedTeamTab,
+                        }))
+                        setTeamValue(normalizedTeamTab)
+
                         recordRuntimeEvent({
                           type: "team-select-change",
                           assetId: asset.id,
                           key: TEAM_SELECT_TAG,
-                          value: nextTeamValue,
+                          value: normalizedTeamTab,
                         })
                       }}
                     >
@@ -4512,11 +5322,6 @@ export default function ScoutPage() {
                           <span className={`text-sm font-medium ${option.colorClassName}`}>{option.label}</span>
                         </label>
                       ))}
-                      {teamSelectOptions.length === 0 ? (
-                        <div className="text-muted-foreground px-2 py-1.5 text-sm">
-                          No teams found for this match.
-                        </div>
-                      ) : null}
                     </RadioGroup>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -4672,25 +5477,33 @@ export default function ScoutPage() {
             </Button>
           )
         })}
+          </>
+        )}
       </div>
       <Dialog open={isSubmitDialogOpen} onOpenChange={setIsSubmitDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
+        <DialogContent className="flex h-[94vh] w-[96vw] max-w-[96vw] flex-col sm:max-w-6xl">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Submit QR Code</DialogTitle>
             <DialogDescription>
               Scan to read the submitted scouting JSON.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex items-center justify-center">
-            {submitQrCodeUrl ? (
-              <img src={submitQrCodeUrl} alt="Submitted scouting JSON QR code" className="size-64" />
-            ) : (
-              <div className="text-muted-foreground text-sm">Unable to generate QR code.</div>
-            )}
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border border-white/15 bg-slate-950/70 p-2">
+              {submitQrCodeUrl ? (
+                <img
+                  src={submitQrCodeUrl}
+                  alt="Submitted scouting JSON QR code"
+                  className="h-full w-full object-contain"
+                />
+              ) : (
+                <div className="text-muted-foreground text-sm">Unable to generate QR code.</div>
+              )}
+            </div>
+            <pre className="text-muted-foreground max-h-[26vh] overflow-auto rounded-md bg-muted/30 p-3 text-xs whitespace-pre-wrap">
+              {submitPayloadPreviewJson}
+            </pre>
           </div>
-          <pre className="text-muted-foreground max-h-56 overflow-auto rounded-md bg-muted/30 p-3 text-xs whitespace-pre-wrap">
-            {submitPayloadPreviewJson}
-          </pre>
           <DialogFooter showCloseButton />
         </DialogContent>
       </Dialog>

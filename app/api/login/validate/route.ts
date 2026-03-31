@@ -72,6 +72,41 @@ async function fetchEventSchedule(eventKey: string): Promise<unknown | null> {
   return response.json();
 }
 
+async function fetchEventTeams(eventKey: string): Promise<unknown | null> {
+  const authKey =
+    process.env.X_TBA_AUTH_KEY?.trim() ||
+    process.env.TBA_AUTH_KEY?.trim() ||
+    process.env["X-TBA-Auth-Key"]?.trim();
+
+  if (!authKey) {
+    console.warn("[login/validate] Missing The Blue Alliance auth key. Set X_TBA_AUTH_KEY in .env.");
+    return null;
+  }
+
+  const response = await fetch(
+    `https://www.thebluealliance.com/api/v3/event/${encodeURIComponent(eventKey)}/teams/simple`,
+    {
+      headers: {
+        "X-TBA-Auth-Key": authKey,
+      },
+      cache: "no-store",
+    }
+  );
+
+  if (!response.ok) {
+    const responseBody = await response.text().catch(() => "");
+    console.warn("[login/validate] TBA teams request failed", {
+      eventKey,
+      status: response.status,
+      statusText: response.statusText,
+      responseBody,
+    });
+    return null;
+  }
+
+  return response.json();
+}
+
 function isSafeIdentifier(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -167,16 +202,20 @@ export async function POST(request: Request) {
 
     const eventKey = parseEventKey(record.payload);
     let eventSchedule: unknown | null = null;
+    let eventTeams: unknown | null = null;
 
     if (eventKey) {
       try {
         eventSchedule = await fetchEventSchedule(eventKey);
+        eventTeams = await fetchEventTeams(eventKey);
         console.log("[login/validate] TBA event schedule response:", {
           eventKey,
           eventSchedule,
+          eventTeams,
         });
       } catch {
         eventSchedule = null;
+        eventTeams = null;
       }
     }
 
@@ -188,6 +227,7 @@ export async function POST(request: Request) {
       fieldMapping: hasFieldMappingColumn ? (record.field_mapping ?? null) : null,
       eventKey,
       eventSchedule,
+      eventTeams,
     });
   } catch {
     return NextResponse.json({ valid: false }, { status: 500 });

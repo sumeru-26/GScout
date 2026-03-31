@@ -134,6 +134,7 @@ function LoginCard() {
         fieldMapping?: unknown;
         eventKey?: string | null;
         eventSchedule?: unknown;
+        eventTeams?: unknown;
       };
 
       if (!result.valid) {
@@ -156,6 +157,7 @@ function LoginCard() {
       localStorage.setItem("eventKey", result.eventKey ?? "");
       localStorage.setItem("eventSchedule", JSON.stringify(result.eventSchedule ?? null));
       localStorage.setItem("tbaEventMatchesSimple", JSON.stringify(result.eventSchedule ?? null));
+      localStorage.setItem("eventTeams", JSON.stringify(result.eventTeams ?? null));
 
       await preloadPayloadIcons(result.payload);
 
