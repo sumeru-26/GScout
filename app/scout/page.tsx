@@ -2143,6 +2143,11 @@ export default function ScoutPage() {
     Record<string, { lastFrameMs: number; accumulator: number; smoothedRatePerSecond: number; increaseSign: number }>
   >({})
   const previewButtonSliderDragByIdRef = useRef<Record<string, ButtonSliderDragInfo>>({})
+  const activePreviewButtonSliderDragRef = useRef<{
+    itemId: string
+    pointerId: number
+    asset: ButtonSliderAsset
+  } | null>(null)
   const holdStartByAssetIdRef = useRef<Record<string, number>>({})
   const holdKeyByAssetIdRef = useRef<Record<string, string>>({})
   const holdIntervalRef = useRef<number | null>(null)
@@ -3005,6 +3010,7 @@ export default function ScoutPage() {
     previewButtonSliderAnimationFramesRef.current = {}
     previewButtonSliderLoopStateRef.current = {}
     previewButtonSliderDragByIdRef.current = {}
+    activePreviewButtonSliderDragRef.current = null
     setHoldStatsByKey({})
     setPreviewHoldDurationsById({})
     holdStartByAssetIdRef.current = {}
@@ -3027,6 +3033,7 @@ export default function ScoutPage() {
       previewButtonSliderAnimationFramesRef.current = {}
       previewButtonSliderLoopStateRef.current = {}
       previewButtonSliderDragByIdRef.current = {}
+      activePreviewButtonSliderDragRef.current = null
     },
     [clearHoldInterval]
   )
@@ -3355,6 +3362,9 @@ export default function ScoutPage() {
 
   const handlePreviewButtonSliderDragStart = useCallback(
     (asset: ButtonSliderAsset, event: React.PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+
       const rect = event.currentTarget.getBoundingClientRect()
       const startX = event.clientX
       const configuredIncreaseSign = asset.increaseDirection === "left" ? -1 : 1
@@ -3372,6 +3382,11 @@ export default function ScoutPage() {
       previewButtonSliderDragByIdRef.current = {
         ...previewButtonSliderDragByIdRef.current,
         [asset.id]: info,
+      }
+      activePreviewButtonSliderDragRef.current = {
+        itemId: asset.id,
+        pointerId: event.pointerId,
+        asset,
       }
       setPreviewButtonSliderDragById((previous) => ({ ...previous, [asset.id]: info }))
       setPreviewButtonSliderValues((previous) => ({ ...previous, [asset.id]: 1 }))
@@ -3437,6 +3452,86 @@ export default function ScoutPage() {
     },
     [clearPreviewButtonSliderLoop, commitSliderValueToTagStack, previewButtonSliderValues, pushTagToStack, recordRuntimeEvent]
   )
+
+  const endActivePreviewButtonSliderDrag = useCallback(() => {
+    const activeDrag = activePreviewButtonSliderDragRef.current
+    if (!activeDrag) return
+
+    activePreviewButtonSliderDragRef.current = null
+    handlePreviewButtonSliderDragEnd(activeDrag.asset)
+  }, [handlePreviewButtonSliderDragEnd])
+
+  useEffect(() => {
+    if (!isPreviewButtonSliderDragging) return
+
+    const handleWindowPointerMove = (event: PointerEvent) => {
+      const activeDrag = activePreviewButtonSliderDragRef.current
+      if (!activeDrag) return
+      if (event.pointerId !== activeDrag.pointerId) return
+
+      handlePreviewButtonSliderDragMove(activeDrag.itemId, event.clientX)
+
+      if (event.pointerType === "touch") {
+        event.preventDefault()
+      }
+    }
+
+    const handleWindowPointerUp = (event: PointerEvent) => {
+      const activeDrag = activePreviewButtonSliderDragRef.current
+      if (!activeDrag) return
+      if (event.pointerId !== activeDrag.pointerId) return
+
+      endActivePreviewButtonSliderDrag()
+    }
+
+    const handleWindowPointerCancel = (event: PointerEvent) => {
+      const activeDrag = activePreviewButtonSliderDragRef.current
+      if (!activeDrag) return
+      if (event.pointerId !== activeDrag.pointerId) return
+
+      // iPad Safari can emit pointercancel while the finger is still on screen.
+      if (event.pointerType !== "touch") {
+        endActivePreviewButtonSliderDrag()
+      }
+    }
+
+    const handleWindowTouchMove = (event: TouchEvent) => {
+      const activeDrag = activePreviewButtonSliderDragRef.current
+      if (!activeDrag) return
+
+      const matchingTouch =
+        Array.from(event.touches).find((touch) => touch.identifier === activeDrag.pointerId) ?? event.touches[0]
+      if (!matchingTouch) return
+
+      handlePreviewButtonSliderDragMove(activeDrag.itemId, matchingTouch.clientX)
+      event.preventDefault()
+    }
+
+    const handleWindowTouchEnd = () => {
+      if (!activePreviewButtonSliderDragRef.current) return
+      endActivePreviewButtonSliderDrag()
+    }
+
+    window.addEventListener("pointermove", handleWindowPointerMove, { capture: true })
+    window.addEventListener("pointerup", handleWindowPointerUp, { capture: true })
+    window.addEventListener("pointercancel", handleWindowPointerCancel, { capture: true })
+    window.addEventListener("touchmove", handleWindowTouchMove, { capture: true, passive: false })
+    window.addEventListener("touchend", handleWindowTouchEnd, { capture: true })
+    window.addEventListener("touchcancel", handleWindowTouchEnd, { capture: true })
+
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove, { capture: true })
+      window.removeEventListener("pointerup", handleWindowPointerUp, { capture: true })
+      window.removeEventListener("pointercancel", handleWindowPointerCancel, { capture: true })
+      window.removeEventListener("touchmove", handleWindowTouchMove, { capture: true })
+      window.removeEventListener("touchend", handleWindowTouchEnd, { capture: true })
+      window.removeEventListener("touchcancel", handleWindowTouchEnd, { capture: true })
+    }
+  }, [
+    endActivePreviewButtonSliderDrag,
+    handlePreviewButtonSliderDragMove,
+    isPreviewButtonSliderDragging,
+  ])
 
   const handleStageToggle = useCallback(
     (asset: ButtonAsset | IconButtonAsset | MovementAsset) => {
@@ -3701,6 +3796,7 @@ export default function ScoutPage() {
     previewButtonSliderAnimationFramesRef.current = {}
     previewButtonSliderLoopStateRef.current = {}
     previewButtonSliderDragByIdRef.current = {}
+    activePreviewButtonSliderDragRef.current = null
     setStartPositionsByAssetId({})
     setHiddenStartPositionIds({})
     setLockedStartPositionByAssetId({})
@@ -4628,19 +4724,40 @@ export default function ScoutPage() {
                 variant="outline"
                 data-button-slider-drag="true"
                 className="absolute overflow-visible rounded-lg border border-white/20 bg-slate-900 p-0 text-white hover:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
-                style={sizedStyle}
+                style={{
+                  ...sizedStyle,
+                  touchAction: "none",
+                  WebkitUserSelect: "none",
+                  userSelect: "none",
+                }}
                 onPointerDown={(event) => {
                   handlePreviewButtonSliderDragStart(asset, event)
                 }}
                 onPointerMove={(event) => {
+                  const activeDrag = activePreviewButtonSliderDragRef.current
+                  if (!activeDrag) return
+                  if (activeDrag.itemId !== asset.id || activeDrag.pointerId !== event.pointerId) return
+
+                  event.preventDefault()
                   handlePreviewButtonSliderDragMove(asset.id, event.clientX)
                 }}
-                onPointerUp={() => {
-                  handlePreviewButtonSliderDragEnd(asset)
+                onPointerUp={(event) => {
+                  const activeDrag = activePreviewButtonSliderDragRef.current
+                  if (!activeDrag) return
+                  if (activeDrag.itemId !== asset.id || activeDrag.pointerId !== event.pointerId) return
+
+                  endActivePreviewButtonSliderDrag()
                 }}
-                onPointerCancel={() => {
-                  handlePreviewButtonSliderDragEnd(asset)
+                onPointerCancel={(event) => {
+                  const activeDrag = activePreviewButtonSliderDragRef.current
+                  if (!activeDrag) return
+                  if (activeDrag.itemId !== asset.id || activeDrag.pointerId !== event.pointerId) return
+
+                  if (event.pointerType !== "touch") {
+                    endActivePreviewButtonSliderDrag()
+                  }
                 }}
+                onContextMenu={(event) => event.preventDefault()}
               >
                 {shouldShowLiveValue ? (
                   <span
