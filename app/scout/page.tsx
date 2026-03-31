@@ -4347,22 +4347,19 @@ export default function ScoutPage() {
           isFullscreen ? "h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
         )}
         onPointerDownCapture={(event) => {
-          if (!isPreviewButtonSliderDragging) return
           const target = event.target as HTMLElement | null
-          if (target?.closest("[data-button-slider-drag='true']")) return
-          event.preventDefault()
-          event.stopPropagation()
-        }}
-        onClickCapture={(event) => {
-          if (!isPreviewButtonSliderDragging) return
-          const target = event.target as HTMLElement | null
-          if (target?.closest("[data-button-slider-drag='true']")) return
-          event.preventDefault()
-          event.stopPropagation()
-        }}
-        onPointerDown={(event) => {
-          if (event.target !== event.currentTarget) return
+          if (isPreviewButtonSliderDragging) {
+            if (target?.closest("[data-button-slider-drag='true']")) return
+            event.preventDefault()
+            event.stopPropagation()
+            return
+          }
+
           if (!previewStageParentId) return
+          const isInteractiveStageTarget = Boolean(
+            target?.closest("button, [role='button'], [role='switch'], [data-slot='switch']")
+          )
+          if (isInteractiveStageTarget) return
 
           setPreviewStageParentId(null)
           recordRuntimeEvent({
@@ -4370,6 +4367,13 @@ export default function ScoutPage() {
             key: previewStageParentId,
             value: "background",
           })
+        }}
+        onClickCapture={(event) => {
+          if (!isPreviewButtonSliderDragging) return
+          const target = event.target as HTMLElement | null
+          if (target?.closest("[data-button-slider-drag='true']")) return
+          event.preventDefault()
+          event.stopPropagation()
         }}
       >
         {scoutFormTypeCode === 2 ? (
