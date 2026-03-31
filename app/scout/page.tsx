@@ -2131,6 +2131,10 @@ export default function ScoutPage() {
   const [previewButtonSliderDragById, setPreviewButtonSliderDragById] = useState<
     Record<string, ButtonSliderDragInfo>
   >({})
+  const isPreviewButtonSliderDragging = useMemo(
+    () => Object.keys(previewButtonSliderDragById).length > 0,
+    [previewButtonSliderDragById]
+  )
   const [previewButtonSliderSpeedById, setPreviewButtonSliderSpeedById] = useState<Record<string, number>>({})
   const [previewTagStacks, setPreviewTagStacks] = useState<Record<string, number[]>>({})
   const [holdStatsByKey, setHoldStatsByKey] = useState<Record<string, HoldStats>>({})
@@ -4246,6 +4250,20 @@ export default function ScoutPage() {
           "relative",
           isFullscreen ? "h-[100dvh]" : "min-h-[calc(100vh-3.5rem)]"
         )}
+        onPointerDownCapture={(event) => {
+          if (!isPreviewButtonSliderDragging) return
+          const target = event.target as HTMLElement | null
+          if (target?.closest("[data-button-slider-drag='true']")) return
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+        onClickCapture={(event) => {
+          if (!isPreviewButtonSliderDragging) return
+          const target = event.target as HTMLElement | null
+          if (target?.closest("[data-button-slider-drag='true']")) return
+          event.preventDefault()
+          event.stopPropagation()
+        }}
         onPointerDown={(event) => {
           if (event.target !== event.currentTarget) return
           if (!previewStageParentId) return
@@ -4422,7 +4440,20 @@ export default function ScoutPage() {
             </div>
           </div>
         ) : (
-          <>
+          <div
+            className="absolute inset-0 select-none"
+            style={{
+              userSelect: "none",
+              WebkitUserSelect: "none",
+              WebkitTouchCallout: "none",
+            }}
+            onCopy={(event) => {
+              event.preventDefault()
+            }}
+            onDragStart={(event) => {
+              event.preventDefault()
+            }}
+          >
         {backgroundImage ? (
           <img
             src={backgroundImage}
@@ -4595,6 +4626,7 @@ export default function ScoutPage() {
                 key={asset.id ?? `button-slider-${index}`}
                 type="button"
                 variant="outline"
+                data-button-slider-drag="true"
                 className="absolute overflow-visible rounded-lg border border-white/20 bg-slate-900 p-0 text-white hover:bg-slate-900 active:scale-[0.97] active:ring-2 active:ring-sky-300/70"
                 style={sizedStyle}
                 onPointerDown={(event) => {
@@ -4607,9 +4639,6 @@ export default function ScoutPage() {
                   handlePreviewButtonSliderDragEnd(asset)
                 }}
                 onPointerCancel={() => {
-                  handlePreviewButtonSliderDragEnd(asset)
-                }}
-                onPointerLeave={() => {
                   handlePreviewButtonSliderDragEnd(asset)
                 }}
               >
@@ -5477,7 +5506,7 @@ export default function ScoutPage() {
             </Button>
           )
         })}
-          </>
+          </div>
         )}
       </div>
       <Dialog open={isSubmitDialogOpen} onOpenChange={setIsSubmitDialogOpen}>
