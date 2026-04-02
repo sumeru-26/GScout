@@ -2197,6 +2197,7 @@ export default function ScoutPage() {
 
       const endMs = getNowMs()
       const durationMs = Math.max(0, endMs - activeStart)
+      const holdValueCs = Math.max(0, Math.round(durationMs / 10))
 
       const nextStarts = { ...holdStartByAssetIdRef.current }
       delete nextStarts[assetId]
@@ -2213,6 +2214,22 @@ export default function ScoutPage() {
         delete next[assetId]
         return next
       })
+
+      if (holdValueCs > 0) {
+        setTagStack((previous) => [
+          ...previous,
+          ...Array.from({ length: holdValueCs }, () => activeKey),
+        ])
+        setTagStackActions((previous) => [
+          ...previous,
+          {
+            tag: activeKey,
+            count: holdValueCs,
+          },
+        ])
+        setRedoTagStack([])
+        setRedoTagStackActions([])
+      }
 
       setHoldStatsByKey((previous) => {
         const existing = previous[activeKey]
@@ -4002,9 +4019,27 @@ export default function ScoutPage() {
                   ? selectedScheduleMatch.redTeamKeys[1]
                   : selectedScheduleMatch.redTeamKeys[2]
         : null
-    const outputTeamValue = mappedTeamValueFromSchedule
-      ? teamKeyToTeamNumber(mappedTeamValueFromSchedule)
-      : teamValue
+
+    const qualitativeTeamListValue = selectedScheduleMatch
+      ? [
+          selectedScheduleMatch.blueTeamKeys[0],
+          selectedScheduleMatch.blueTeamKeys[1],
+          selectedScheduleMatch.blueTeamKeys[2],
+          selectedScheduleMatch.redTeamKeys[0],
+          selectedScheduleMatch.redTeamKeys[1],
+          selectedScheduleMatch.redTeamKeys[2],
+        ]
+          .filter((teamKey): teamKey is string => typeof teamKey === "string" && teamKey.trim().length > 0)
+          .map((teamKey) => teamKeyToTeamNumber(teamKey))
+          .join(",")
+      : ""
+
+    const outputTeamValue =
+      scoutFormTypeCode === 1
+        ? qualitativeTeamListValue || (mappedTeamValueFromSchedule ? teamKeyToTeamNumber(mappedTeamValueFromSchedule) : teamValue)
+        : mappedTeamValueFromSchedule
+          ? teamKeyToTeamNumber(mappedTeamValueFromSchedule)
+          : teamValue
 
     const scoutTypeLabel = scoutFormTypeCode === 1 ? "qualitative" : scoutFormTypeCode === 2 ? "pit" : "match"
 
@@ -5221,6 +5256,15 @@ export default function ScoutPage() {
             )
             const tagCounts = new Map<string, number>()
             const orderedTagsByMostRecent: string[] = []
+            const holdMetricBaseKeys = new Set(
+              scoutAssets
+                .filter(
+                  (candidate): candidate is ButtonAsset | IconButtonAsset =>
+                    (candidate.type === "button" || candidate.type === "icon-button") &&
+                    (candidate.buttonPressMode ?? "tap") === "hold"
+                )
+                .map((candidate) => normalizeRuntimeTag(getAssetRuntimeKey(candidate)))
+            )
 
             for (let index = tagStack.length - 1; index >= 0; index -= 1) {
               const stackTag = tagStack[index]
@@ -5233,20 +5277,15 @@ export default function ScoutPage() {
             }
 
             const visibleLogEntries = orderedTagsByMostRecent.map((stackTag) => {
-              const holdMs = holdStatsByKey[stackTag]?.totalMs ?? 0
-              const holdSuffix = holdMs > 0 ? ` | hold ${(holdMs / 1000).toFixed(2)}s` : ""
-              return `${stackTag}: ${tagCounts.get(stackTag) ?? 0}${holdSuffix}`
-            })
+              const stackCount = tagCounts.get(stackTag) ?? 0
+              const isHoldMetric = holdMetricBaseKeys.has(stripModePrefix(stackTag))
 
-            const holdOnlyEntries = Object.entries(holdStatsByKey)
-              .filter(([, stats]) => stats.totalMs > 0)
-              .sort(([, left], [, right]) => {
-                const leftMostRecent = left.segments[left.segments.length - 1]?.endMs ?? 0
-                const rightMostRecent = right.segments[right.segments.length - 1]?.endMs ?? 0
-                return rightMostRecent - leftMostRecent
-              })
-              .filter(([key]) => !tagCounts.has(key))
-              .map(([key, stats]) => `${key}: hold ${(stats.totalMs / 1000).toFixed(2)}s`)
+              if (isHoldMetric) {
+                return `${stackTag}: hold ${(stackCount / 100).toFixed(2)}s`
+              }
+
+              return `${stackTag}: ${stackCount}`
+            })
 
             const movementEntries = Object.entries(movementStatsByKey)
               .filter(([, stats]) => stats.toggleCount > 0 || stats.totalMs > 0)
@@ -5256,7 +5295,7 @@ export default function ScoutPage() {
                   `${key}: move ${(stats.totalMs / 1000).toFixed(2)}s | toggles ${stats.toggleCount}`
               )
 
-            const limitedLogEntries = [...visibleLogEntries, ...holdOnlyEntries, ...movementEntries].slice(
+            const limitedLogEntries = [...visibleLogEntries, ...movementEntries].slice(
               0,
               visibleLineCount
             )
